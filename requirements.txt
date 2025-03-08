@@ -1,0 +1,4 @@
+functions-framework==3.*
+google-cloud==0.34.0
+google-cloud-bigquery==3.30.0
+pysftp==0.2.9
