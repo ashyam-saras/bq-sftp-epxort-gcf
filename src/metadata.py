@@ -3,14 +3,14 @@ Metadata tracking for BigQuery to SFTP exports.
 Handles the creation and management of export metadata table.
 """
 
+import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
-import pytest
 from google.api_core.exceptions import NotFound
 from google.cloud import bigquery
 
-from src.config import ConfigError, validate_config
+from src.config import ConfigError
 from src.helpers import cprint
 
 # BigQuery client
@@ -235,3 +235,230 @@ def get_incremental_filter(
 
     return where_clause, query_params
 
+
+def record_processed_hashes(
+    table_id: str,
+    export_name: str,
+    source_table: str,
+    row_hashes: List[str],
+    rows_exported: int,
+    file_name: str,
+) -> None:
+    """
+    Record processed row hashes for hash-based incremental processing.
+
+    Args:
+        table_id: Fully qualified metadata table ID
+        export_name: Name of the export job
+        source_table: Source table that was exported
+        row_hashes: List of row hashes that were processed
+        rows_exported: Number of rows exported
+        file_name: Name of the exported file
+    """
+    now = datetime.now()
+
+    # Store processed hashes in a separate table for efficiency
+    hash_table_id = f"{table_id}_hashes"
+
+    # Ensure hash table exists
+    try:
+        client.get_table(hash_table_id)
+    except NotFound:
+        schema = [
+            bigquery.SchemaField("export_name", "STRING", mode="REQUIRED"),
+            bigquery.SchemaField("row_hash", "STRING", mode="REQUIRED"),
+            bigquery.SchemaField("processed_at", "TIMESTAMP"),
+        ]
+        table = bigquery.Table(hash_table_id, schema=schema)
+        client.create_table(table)
+
+    # Insert hashes
+    rows = [{"export_name": export_name, "row_hash": hash_val, "processed_at": now} for hash_val in row_hashes]
+
+    errors = client.insert_rows_json(hash_table_id, rows)
+    if errors:
+        cprint(f"Error recording processed hashes: {errors}", severity="ERROR")
+
+    # Record the main export metadata
+    record_export_success(
+        table_id=table_id,
+        export_name=export_name,
+        source_table=source_table,
+        rows_exported=rows_exported,
+        file_name=file_name,
+    )
+
+
+def ensure_tables_exist(metadata_table_id: str) -> None:
+    """
+    Ensure both metadata and hash tables exist.
+
+    Args:
+        metadata_table_id: Fully qualified metadata table ID
+    """
+    hash_table_id = f"{metadata_table_id}_hashes"
+
+    # Define metadata table schema
+    metadata_schema = [
+        bigquery.SchemaField("export_id", "STRING", mode="REQUIRED"),
+        bigquery.SchemaField("export_name", "STRING", mode="REQUIRED"),
+        bigquery.SchemaField("source_table", "STRING", mode="REQUIRED"),
+        bigquery.SchemaField("status", "STRING", mode="REQUIRED"),
+        bigquery.SchemaField("rows_exported", "INTEGER"),
+        bigquery.SchemaField("file_name", "STRING"),
+        bigquery.SchemaField("started_at", "TIMESTAMP", mode="REQUIRED"),
+        bigquery.SchemaField("completed_at", "TIMESTAMP"),
+        bigquery.SchemaField("error_message", "STRING"),
+    ]
+
+    # Define hash table schema
+    hash_schema = [
+        bigquery.SchemaField("export_id", "STRING", mode="REQUIRED"),
+        bigquery.SchemaField("export_name", "STRING", mode="REQUIRED"),
+        bigquery.SchemaField("row_hash", "STRING", mode="REQUIRED"),
+        bigquery.SchemaField("processed_at", "TIMESTAMP", mode="REQUIRED"),
+    ]
+
+    # Create tables if they don't exist
+    for table_id, schema in [(metadata_table_id, metadata_schema), (hash_table_id, hash_schema)]:
+        try:
+            client.get_table(table_id)
+            cprint(f"Table {table_id} exists", severity="INFO")
+        except NotFound:
+            cprint(f"Table {table_id} not found, creating...", severity="INFO")
+            table = bigquery.Table(table_id, schema=schema)
+            try:
+                client.create_table(table)
+                cprint(f"Created table {table_id}", severity="INFO")
+            except Exception as e:
+                raise ConfigError(f"Failed to create table {table_id}: {str(e)}")
+
+
+def start_export(metadata_table_id: str, export_name: str, source_table: str) -> str:
+    """
+    Record the start of an export job and return the export ID.
+
+    Args:
+        metadata_table_id: Fully qualified metadata table ID
+        export_name: Name of the export job
+        source_table: Source table being exported
+
+    Returns:
+        String: Export ID (UUID)
+    """
+    export_id = str(uuid.uuid4())
+    now = datetime.now()
+
+    row = {
+        "export_id": export_id,
+        "export_name": export_name,
+        "source_table": source_table,
+        "status": "STARTED",
+        "started_at": now,
+    }
+
+    errors = client.insert_rows_json(metadata_table_id, [row])
+    if errors:
+        cprint(f"Error recording export start: {errors}", severity="ERROR")
+    else:
+        cprint(f"Recorded start of export '{export_name}' with ID '{export_id}'", severity="INFO")
+
+    return export_id
+
+
+def update_export_success(metadata_table_id: str, export_id: str, rows_exported: int, file_name: str) -> None:
+    """
+    Update an export record to mark it as successful.
+
+    Args:
+        metadata_table_id: Fully qualified metadata table ID
+        export_id: ID of the export to update
+        rows_exported: Number of rows exported
+        file_name: Name of the exported file
+    """
+    now = datetime.now()
+
+    update_query = f"""
+    UPDATE `{metadata_table_id}`
+    SET 
+        status = 'SUCCESS',
+        rows_exported = {rows_exported},
+        file_name = '{file_name}',
+        completed_at = TIMESTAMP '{now.isoformat()}'
+    WHERE export_id = '{export_id}'
+    """
+
+    try:
+        query_job = client.query(update_query)
+        query_job.result()
+        cprint(f"Updated export {export_id} to SUCCESS status", severity="INFO")
+    except Exception as e:
+        cprint(f"Error updating export status: {str(e)}", severity="ERROR")
+
+
+def update_export_error(metadata_table_id: str, export_id: str, error_message: str) -> None:
+    """
+    Update an export record to mark it as failed.
+
+    Args:
+        metadata_table_id: Fully qualified metadata table ID
+        export_id: ID of the export to update
+        error_message: Error description
+    """
+    now = datetime.now()
+
+    # Escape single quotes in SQL
+    error_message = error_message.replace("'", "''")
+
+    update_query = f"""
+    UPDATE `{metadata_table_id}`
+    SET 
+        status = 'ERROR',
+        error_message = '{error_message}',
+        completed_at = TIMESTAMP '{now.isoformat()}'
+    WHERE export_id = '{export_id}'
+    """
+
+    try:
+        query_job = client.query(update_query)
+        query_job.result()
+        cprint(f"Updated export {export_id} to ERROR status", severity="ERROR")
+    except Exception as e:
+        cprint(f"Error updating export status: {str(e)}", severity="ERROR")
+
+
+def record_processed_hashes(hash_table_id: str, export_id: str, export_name: str, query_job_destination: str) -> None:
+    """
+    Record all processed hashes in a single operation.
+
+    Args:
+        hash_table_id: Fully qualified hash table ID
+        export_id: ID of the export job
+        export_name: Name of the export job
+        query_job_destination: Temporary table with query results containing hashes
+    """
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    insert_query = f"""
+    INSERT INTO `{hash_table_id}` (
+        export_id,
+        export_name,
+        row_hash,
+        processed_at
+    )
+    SELECT 
+        '{export_id}' as export_id,
+        '{export_name}' as export_name,
+        row_hash,
+        TIMESTAMP('{now}') as processed_at
+    FROM `{query_job_destination}`
+    """
+
+    try:
+        query_job = client.query(insert_query)
+        result = query_job.result()
+        inserted_rows = query_job.num_dml_affected_rows
+        cprint(f"Recorded {inserted_rows} processed hashes for export '{export_name}'", severity="INFO")
+    except Exception as e:
+        cprint(f"Error recording processed hashes: {str(e)}", severity="ERROR")
+        raise
