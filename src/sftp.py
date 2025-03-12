@@ -43,7 +43,7 @@ def parse_gcs_uri(gcs_uri: str) -> Tuple[str, str]:
 
 def upload_from_gcs(sftp_config: Dict[str, Any], gcs_uri: str, remote_filename: str) -> None:
     """
-    Stream a file from GCS to SFTP server with optimized buffer size.
+    Upload a file from GCS to SFTP server, choosing the optimal method based on file size.
 
     Args:
         sftp_config: Dictionary with SFTP connection parameters
@@ -52,12 +52,17 @@ def upload_from_gcs(sftp_config: Dict[str, Any], gcs_uri: str, remote_filename: 
     """
     import time
 
+    # Extract common parameters
     host = sftp_config["host"]
     port = int(sftp_config.get("port", 22))
     username = sftp_config["username"]
     password = sftp_config["password"]
     directory = sftp_config["directory"]
-    buffer_size = sftp_config.get("buffer_size", 262144)  # Updated default: 256KB
+    buffer_size = sftp_config.get("buffer_size", 262144)  # 256KB default
+
+    # Extract upload method preference - update default to "direct"
+    upload_method = sftp_config.get("upload_method", "direct")  # direct, stream, or download
+    size_threshold = sftp_config.get("size_threshold", 1073741824)  # 1GB default
 
     # Use PurePosixPath for SFTP paths (always Unix-style)
     remote_path = PurePosixPath(directory)
@@ -65,85 +70,39 @@ def upload_from_gcs(sftp_config: Dict[str, Any], gcs_uri: str, remote_filename: 
 
     cprint(f"Uploading file from GCS to SFTP: {remote_file_path}")
 
+    # Get GCS blob
     bucket_name, blob_name = parse_gcs_uri(gcs_uri)
     storage_client = storage.Client()
     bucket = storage_client.bucket(bucket_name)
     blob = bucket.get_blob(blob_name)
 
-    # Get blob size for progress reporting
+    # Get blob size
     blob_size = blob.size
     cprint(f"File size: {blob_size:,} bytes ({blob_size / (1024*1024):.2f} MB)")
 
     try:
+        # Connect to SFTP FIRST - before uploading
         cprint(f"Connecting to SFTP server at {host}:{port}")
-
-        # Create transport and connect
         transport = paramiko.Transport((host, port))
         transport.connect(username=username, password=password)
         sftp = paramiko.SFTPClient.from_transport(transport)
 
-        # Ensure directory exists
-        try:
-            sftp.stat(str(remote_path))
-            cprint(f"Directory {remote_path} exists")
-        except FileNotFoundError:
-            cprint(f"Creating directory path: {remote_path}")
+        # Create directories if needed
+        ensure_sftp_directory(sftp, remote_path)
 
-            # Create directories recursively using pathlib
-            current = PurePosixPath("/")
-            for part in remote_path.parts[1:]:  # Skip the first empty part from root
-                current = current / part
-                try:
-                    sftp.stat(str(current))
-                except FileNotFoundError:
-                    cprint(f"Creating directory: {current}")
-                    sftp.mkdir(str(current))
+        # Now choose and execute upload method
+        if upload_method == "stream" or (upload_method == "auto" and blob_size >= size_threshold):
+            cprint("Using streaming method for transfer")
+            _upload_streaming(sftp, blob, str(remote_file_path), buffer_size)
+        elif upload_method == "download":
+            cprint("Using chunked download-upload method")
+            _upload_with_download(sftp, blob, str(remote_file_path), buffer_size)
+        else:
+            # Make direct the default option
+            cprint("Using direct download-upload method")
+            _upload_direct(sftp, blob, str(remote_file_path), buffer_size)
 
-        # Stream the file with progress reporting
-        cprint(f"Streaming file from GCS to SFTP with buffer size {buffer_size}")
-
-        # Manual chunked download with progress reporting
-        with sftp.file(str(remote_file_path), "wb", bufsize=buffer_size) as sftp_file:
-            # Download in chunks and report progress
-            chunk_size = buffer_size
-            downloaded = 0
-            last_progress_time = time.time()
-            start_time = time.time()
-
-            # Download the file in chunks
-            with blob.open("rb") as source_file:
-                while True:
-                    chunk = source_file.read(chunk_size)
-                    if not chunk:
-                        break
-
-                    # Write to SFTP
-                    sftp_file.write(chunk)
-
-                    # Update progress
-                    downloaded += len(chunk)
-                    current_time = time.time()
-
-                    # Report progress every second
-                    if current_time - last_progress_time >= 1.0:
-                        percent = (downloaded / blob_size) * 100
-                        elapsed = current_time - start_time
-                        speed = downloaded / elapsed if elapsed > 0 else 0
-                        eta = (blob_size - downloaded) / speed if speed > 0 else 0
-
-                        cprint(
-                            f"Progress: {percent:.1f}% ({downloaded/1024/1024:,.2f}/{blob_size/1024/1024:,.2f} MB) "
-                            f"- {speed/1024/1024:.2f} MB/s - ETA: {eta/60:.1f} mins"
-                        )
-                        last_progress_time = current_time
-
-        total_time = time.time() - start_time
-        avg_speed = blob_size / total_time if total_time > 0 else 0
-        cprint(
-            f"Successfully uploaded {blob_size/1024/1024:,.2f} MB in {total_time/60:.1f} mins "
-            f"({avg_speed/1024/1024:.2f} MB/s)"
-        )
-
+        # Close connection
         sftp.close()
         transport.close()
 
@@ -151,6 +110,190 @@ def upload_from_gcs(sftp_config: Dict[str, Any], gcs_uri: str, remote_filename: 
         error_message = f"SFTP upload failed: {str(e)}"
         cprint(error_message, severity="ERROR")
         raise ConfigError(error_message)
+
+
+def ensure_sftp_directory(sftp, remote_path):
+    """Create directory tree if it doesn't exist."""
+    try:
+        sftp.stat(str(remote_path))
+        cprint(f"Directory {remote_path} exists")
+    except FileNotFoundError:
+        cprint(f"Creating directory path: {remote_path}")
+
+        # Create directories recursively using pathlib
+        current = PurePosixPath("/")
+        for part in remote_path.parts[1:]:  # Skip the first empty part from root
+            current = current / part
+            try:
+                sftp.stat(str(current))
+            except FileNotFoundError:
+                cprint(f"Creating directory: {current}")
+                sftp.mkdir(str(current))
+
+
+def _upload_streaming(sftp, blob, remote_file_path, buffer_size):
+    """Stream file directly from GCS to SFTP."""
+    import time
+
+    blob_size = blob.size
+
+    # Stream the file with progress reporting
+    cprint(f"Streaming file from GCS to SFTP with buffer size {buffer_size}")
+
+    # Manual chunked download with progress reporting
+    with sftp.file(remote_file_path, "wb", bufsize=buffer_size) as sftp_file:
+        # Download in chunks and report progress
+        chunk_size = buffer_size
+        downloaded = 0
+        last_progress_time = time.time()
+        start_time = time.time()
+
+        # Download the file in chunks
+        with blob.open("rb") as source_file:
+            while True:
+                chunk = source_file.read(chunk_size)
+                if not chunk:
+                    break
+
+                # Write to SFTP
+                sftp_file.write(chunk)
+
+                # Update progress
+                downloaded += len(chunk)
+                current_time = time.time()
+
+                # Report progress every second
+                if current_time - last_progress_time >= 1.0:
+                    percent = (downloaded / blob_size) * 100
+                    elapsed = current_time - start_time
+                    speed = downloaded / elapsed if elapsed > 0 else 0
+                    eta = (blob_size - downloaded) / speed if speed > 0 else 0
+
+                    cprint(
+                        f"Progress: {percent:.1f}% ({downloaded/1024/1024:,.2f}/{blob_size/1024/1024:,.2f} MB) "
+                        f"- {speed/1024/1024:.2f} MB/s - ETA: {eta/60:.1f} mins"
+                    )
+                    last_progress_time = current_time
+
+    total_time = time.time() - start_time
+    avg_speed = blob_size / total_time if total_time > 0 else 0
+    cprint(
+        f"Successfully uploaded {blob_size/1024/1024:,.2f} MB in {total_time/60:.1f} mins "
+        f"({avg_speed/1024/1024:.2f} MB/s)"
+    )
+
+
+def _upload_with_download(sftp, blob, remote_file_path, buffer_size):
+    """Two-step process: Download to temp file then upload to SFTP."""
+    import os
+    import tempfile
+    import time
+
+    # Step 1: Download to temporary file
+    temp_file = tempfile.NamedTemporaryFile(delete=False)
+    temp_path = temp_file.name
+    temp_file.close()  # Close but don't delete
+
+    try:
+        cprint(f"Downloading from GCS to temporary file: {temp_path}")
+        download_start = time.time()
+        blob.download_to_filename(temp_path)
+        download_time = time.time() - download_start
+        file_size = os.path.getsize(temp_path)
+
+        cprint(
+            f"Downloaded {file_size/1024/1024:,.2f} MB in {download_time:.1f}s "
+            f"({file_size/download_time/1024/1024:.2f} MB/s)"
+        )
+
+        # Step 2: Upload to SFTP with progress reporting
+        cprint(f"Uploading file to SFTP: {remote_file_path}")
+        upload_start = time.time()
+        last_progress_time = upload_start
+        uploaded = 0
+
+        with open(temp_path, "rb") as local_file:
+            # Create SFTP file with specified buffer
+            with sftp.file(remote_file_path, "wb", bufsize=buffer_size) as sftp_file:
+                while True:
+                    chunk = local_file.read(buffer_size)
+                    if not chunk:
+                        break
+
+                    sftp_file.write(chunk)
+                    uploaded += len(chunk)
+
+                    current_time = time.time()
+                    if current_time - last_progress_time >= 1.0:
+                        percent = (uploaded / file_size) * 100
+                        elapsed = current_time - upload_start
+                        speed = uploaded / elapsed if elapsed > 0 else 0
+                        eta = (file_size - uploaded) / speed if speed > 0 else 0
+
+                        cprint(
+                            f"Progress: {percent:.1f}% ({uploaded/1024/1024:,.2f}/{file_size/1024/1024:,.2f} MB) "
+                            f"- {speed/1024/1024:.2f} MB/s - ETA: {eta/60:.1f} mins"
+                        )
+                        last_progress_time = current_time
+
+        # Report results
+        upload_time = time.time() - upload_start
+        total_time = download_time + upload_time
+        avg_speed = file_size / upload_time if upload_time > 0 else 0
+
+        cprint(f"Upload completed in {upload_time:.1f}s ({avg_speed/1024/1024:.2f} MB/s)")
+        cprint(f"Total transfer time: {total_time:.1f}s (download + upload)")
+
+    finally:
+        # Clean up temp file
+        if os.path.exists(temp_path):
+            os.unlink(temp_path)
+            cprint("Temporary file removed")
+
+
+def _upload_direct(sftp, blob, remote_file_path, buffer_size):
+    """Direct download and upload without chunking the upload."""
+    import os
+    import tempfile
+    import time
+
+    # Step 1: Download to temporary file
+    temp_file = tempfile.NamedTemporaryFile(delete=False)
+    temp_path = temp_file.name
+    temp_file.close()  # Close but don't delete
+
+    try:
+        cprint(f"Downloading from GCS to temporary file: {temp_path}")
+        download_start = time.time()
+        blob.download_to_filename(temp_path)
+        download_time = time.time() - download_start
+        file_size = os.path.getsize(temp_path)
+
+        cprint(
+            f"Downloaded {file_size/1024/1024:,.2f} MB in {download_time:.1f}s "
+            f"({file_size/download_time/1024/1024:.2f} MB/s)"
+        )
+
+        # Step 2: Direct upload using put (no manual chunking)
+        cprint(f"Directly uploading file to SFTP: {remote_file_path}")
+        upload_start = time.time()
+
+        # Use direct put method instead of manual chunking
+        sftp.put(temp_path, remote_file_path)
+
+        # Report results
+        upload_time = time.time() - upload_start
+        total_time = download_time + upload_time
+        avg_speed = file_size / upload_time if upload_time > 0 else 0
+
+        cprint(f"Upload completed in {upload_time:.1f}s ({avg_speed/1024/1024:.2f} MB/s)")
+        cprint(f"Total transfer time: {total_time:.1f}s (download + upload)")
+
+    finally:
+        # Clean up temp file
+        if os.path.exists(temp_path):
+            os.unlink(temp_path)
+            cprint("Temporary file removed")
 
 
 def check_sftp_credentials(sftp_config: Dict[str, Any], timeout: int = 10) -> bool:
@@ -234,7 +377,19 @@ if __name__ == "__main__":
     add_sftp_args(upload_parser)
     upload_parser.add_argument("--gcs-uri", required=True, help="GCS URI of file to upload (gs://bucket/path)")
     upload_parser.add_argument("--remote-file", required=True, help="Filename to use on SFTP server")
-    upload_parser.add_argument("--buffer-size", type=int, default=32768, help="Buffer size in bytes (default: 32KB)")
+    upload_parser.add_argument("--buffer-size", type=int, default=262144, help="Buffer size in bytes (default: 256KB)")
+    upload_parser.add_argument(
+        "--method",
+        choices=["direct", "auto", "stream", "download"],
+        default="direct",
+        help="Transfer method: direct (fastest), auto (size-based), stream, or download (chunked)",
+    )
+    upload_parser.add_argument(
+        "--size-threshold",
+        type=int,
+        default=1073741824,  # 1GB
+        help="Size threshold for auto method in bytes (default: 1GB)",
+    )
 
     args = parser.parse_args()
 
@@ -265,8 +420,10 @@ if __name__ == "__main__":
     elif args.command == "upload":
         # Upload file from GCS to SFTP
         try:
-            # Add buffer size to config
+            # Configure parameters
             sftp_config["buffer_size"] = args.buffer_size
+            sftp_config["upload_method"] = args.method
+            sftp_config["size_threshold"] = args.size_threshold
 
             print(f"Uploading {args.gcs_uri} to SFTP at {host}:{port}{directory}/{args.remote_file}")
             upload_from_gcs(sftp_config, args.gcs_uri, args.remote_file)
