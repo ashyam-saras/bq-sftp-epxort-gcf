@@ -94,6 +94,9 @@ def upload_from_gcs(sftp_config: Dict[str, Any], gcs_uri: str, remote_filename: 
                     sftp.mkdir(str(current))
 
         # Stream the file
+        cprint(f"Streaming file from GCS to SFTP with buffer size {buffer_size}")
+        cprint(f"Source: {gcs_uri}", severity="DEBUG")
+        cprint(f"Destination: {remote_file_path}", severity="DEBUG")
         with sftp.file(str(remote_file_path), "wb", bufsize=buffer_size) as sftp_file:
             blob.download_to_file(sftp_file)
 
@@ -158,68 +161,6 @@ def check_sftp_credentials(sftp_config: Dict[str, Any], timeout: int = 10) -> bo
         raise ConfigError(error_message)
 
 
-def check_sftp_connection_with_pysftp(sftp_config: Dict[str, Any], timeout: int = 10) -> bool:
-    """
-    Check SFTP connection using the pysftp library (alternative to paramiko).
-
-    Args:
-        sftp_config: Dictionary with SFTP connection parameters
-        timeout: Connection timeout in seconds
-
-    Returns:
-        bool: True if connection is successful
-
-    Raises:
-        ConfigError: If connection fails
-    """
-    # Import here to make it optional
-    import pysftp
-
-    host = sftp_config["host"]
-    port = int(sftp_config.get("port", 22))
-    username = sftp_config["username"]
-    password = sftp_config["password"]
-    remote_path = sftp_config.get("directory", sftp_config.get("path", "/"))
-
-    # Disable host key checking for testing
-    cnopts = pysftp.CnOpts()
-    cnopts.hostkeys = None  # Disable host key checking
-
-    try:
-        cprint(f"Testing SFTP connection via pysftp to {host}:{port} as {username}")
-
-        # Connect with timeout
-        with pysftp.Connection(
-            host=host,
-            port=port,
-            username=username,
-            password=password,
-            cnopts=cnopts,
-            default_path=remote_path,
-        ) as sftp:
-            # Try listing files
-            file_list = sftp.listdir()
-            cprint(f"Connected successfully. Files in directory: {len(file_list)}")
-
-            # Check directory exists and permissions
-            if remote_path != "/":
-                try:
-                    if not sftp.exists(remote_path):
-                        cprint(f"Warning: Directory {remote_path} does not exist", severity="WARNING")
-                    else:
-                        cprint(f"Directory {remote_path} exists")
-                except Exception as path_error:
-                    cprint(f"Could not check path: {str(path_error)}", severity="WARNING")
-
-        cprint(f"SFTP credentials valid using pysftp, successfully connected to {host}:{port}")
-        return True
-
-    except Exception as e:
-        error_message = f"SFTP connection failed via pysftp: {str(e)}"
-        cprint(error_message, severity="ERROR")
-        raise ConfigError(error_message)
-
-
 if __name__ == "__main__":
     import argparse
 
@@ -228,14 +169,29 @@ if __name__ == "__main__":
     # Load environment variables from .env file
     load_dotenv()
 
-    parser = argparse.ArgumentParser(description="Test SFTP connection")
-    parser.add_argument("--host", help="SFTP host")
-    parser.add_argument("--port", type=int, default=22, help="SFTP port (default: 22)")
-    parser.add_argument("--username", help="SFTP username")
-    parser.add_argument("--password", help="SFTP password")
-    parser.add_argument("--directory", help="Remote directory to test")
-    parser.add_argument("--timeout", type=int, default=10, help="Connection timeout in seconds")
-    parser.add_argument("--use-pysftp", action="store_true", help="Use pysftp library instead of paramiko")
+    # Create main parser
+    parser = argparse.ArgumentParser(description="SFTP operations")
+    subparsers = parser.add_subparsers(dest="command", help="Command to execute")
+
+    # Common SFTP arguments
+    def add_sftp_args(parser):
+        parser.add_argument("--host", help="SFTP host")
+        parser.add_argument("--port", type=int, default=22, help="SFTP port (default: 22)")
+        parser.add_argument("--username", help="SFTP username")
+        parser.add_argument("--password", help="SFTP password")
+        parser.add_argument("--directory", help="Remote directory")
+
+    # Create 'check' command parser
+    check_parser = subparsers.add_parser("check", help="Check SFTP connection")
+    add_sftp_args(check_parser)
+    check_parser.add_argument("--timeout", type=int, default=10, help="Connection timeout in seconds")
+
+    # Create 'upload' command parser
+    upload_parser = subparsers.add_parser("upload", help="Upload file from GCS to SFTP")
+    add_sftp_args(upload_parser)
+    upload_parser.add_argument("--gcs-uri", required=True, help="GCS URI of file to upload (gs://bucket/path)")
+    upload_parser.add_argument("--remote-file", required=True, help="Filename to use on SFTP server")
+    upload_parser.add_argument("--buffer-size", type=int, default=32768, help="Buffer size in bytes (default: 32KB)")
 
     args = parser.parse_args()
 
@@ -253,22 +209,25 @@ if __name__ == "__main__":
 
     sftp_config = {"host": host, "port": port, "username": username, "password": password, "directory": directory}
 
-    try:
-        print(f"Testing SFTP connection to {host}:{port} as {username}...")
+    if args.command == "check" or args.command is None:
+        # Check SFTP connection
+        try:
+            print(f"Testing SFTP connection to {host}:{port} as {username}...")
+            check_sftp_credentials(sftp_config, timeout=args.timeout if hasattr(args, "timeout") else 10)
+            print("✅ Connection successful!")
+        except Exception as e:
+            print(f"❌ Connection failed: {str(e)}")
+            exit(1)
 
-        if args.use_pysftp:
-            try:
-                import pysftp
-            except ImportError:
-                print("Error: pysftp library not installed. Please install it with:")
-                print("pip install pysftp")
-                exit(1)
+    elif args.command == "upload":
+        # Upload file from GCS to SFTP
+        try:
+            # Add buffer size to config
+            sftp_config["buffer_size"] = args.buffer_size
 
-            check_sftp_connection_with_pysftp(sftp_config, timeout=args.timeout)
-        else:
-            check_sftp_credentials(sftp_config, timeout=args.timeout)
-
-        print("✅ Connection successful!")
-    except Exception as e:
-        print(f"❌ Connection failed: {str(e)}")
-        exit(1)
+            print(f"Uploading {args.gcs_uri} to SFTP at {host}:{port}{directory}/{args.remote_file}")
+            upload_from_gcs(sftp_config, args.gcs_uri, args.remote_file)
+            print("✅ Upload successful!")
+        except Exception as e:
+            print(f"❌ Upload failed: {str(e)}")
+            exit(1)
