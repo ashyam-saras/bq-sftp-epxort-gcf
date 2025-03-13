@@ -5,20 +5,38 @@ Handles tracking export status and maintaining incremental export hash tables.
 
 import argparse
 import datetime
-import os
 import uuid
 from typing import Any, Dict
 
 from google.cloud import bigquery
 
+from src.config import ConfigError, load_config
 from src.helpers import cprint
 
 # Create a shared BigQuery client
 client = bigquery.Client()
 
-# Fixed table names
-EXPORT_METADATA_TABLE = "export_metadata"
-EXPORT_PROCESSED_HASHES_TABLE = "export_processed_hashes"
+# Load config when module is imported - will fail if config is missing or invalid
+try:
+    config = load_config()
+    metadata_config = config.get("metadata", {})
+
+    # Get fully qualified table names directly from config - required, no fallbacks
+    if "export_metadata_table" not in metadata_config:
+        raise ConfigError("Required configuration 'metadata.export_metadata_table' is missing")
+
+    if "processed_hashes_table" not in metadata_config:
+        raise ConfigError("Required configuration 'metadata.processed_hashes_table' is missing")
+
+    EXPORT_METADATA_TABLE = metadata_config["export_metadata_table"]
+    EXPORT_PROCESSED_HASHES_TABLE = metadata_config["processed_hashes_table"]
+
+    cprint(f"Metadata tables configured: {EXPORT_METADATA_TABLE}, {EXPORT_PROCESSED_HASHES_TABLE}")
+
+except Exception as e:
+    # Re-raise any configuration errors
+    cprint(f"Configuration error in metadata module: {str(e)}", severity="ERROR")
+    raise
 
 # Export status constants
 STATUS_STARTED = "STARTED"
@@ -26,45 +44,8 @@ STATUS_SUCCESS = "SUCCESS"
 STATUS_ERROR = "ERROR"
 
 
-def get_metadata_dataset() -> str:
-    """
-    Get the metadata dataset name from environment variable or default.
-
-    Returns:
-        str: Metadata dataset name including project
-    """
-    project_id = os.environ.get("GCP_PROJECT", client.project)
-    dataset_name = os.environ.get("METADATA_DATASET", "metadata")
-    return f"{project_id}.{dataset_name}"
-
-
-def get_export_table() -> str:
-    """
-    Get the fully qualified export metadata table name.
-
-    Returns:
-        str: The fully qualified table name
-    """
-    return f"{get_metadata_dataset()}.{EXPORT_METADATA_TABLE}"
-
-
-def get_processed_hashes_table() -> str:
-    """
-    Get the fully qualified processed hashes table name.
-
-    Returns:
-        str: The fully qualified table name
-    """
-    return f"{get_metadata_dataset()}.{EXPORT_PROCESSED_HASHES_TABLE}"
-
-
 def generate_export_id() -> str:
-    """
-    Generate a unique export ID.
-
-    Returns:
-        str: Unique export ID
-    """
+    """Generate a unique export ID."""
     return str(uuid.uuid4())
 
 
@@ -81,13 +62,12 @@ def start_export(export_name: str, source_table: str, destination_uri: str) -> s
         str: Export ID
     """
     export_id = generate_export_id()
-    export_table = get_export_table()
 
-    # Insert new export record using SQL DML instead of streaming API
+    # Insert new export record using SQL DML
     now = datetime.datetime.now(datetime.timezone.utc)
 
     query = f"""
-    INSERT INTO `{export_table}` (export_id, export_name, source_table, destination_uri, status, started_at)
+    INSERT INTO `{EXPORT_METADATA_TABLE}` (export_id, export_name, source_table, destination_uri, status, started_at)
     VALUES (@export_id, @export_name, @source_table, @destination_uri, @status, @started_at)
     """
 
@@ -118,11 +98,10 @@ def complete_export(export_id: str, rows_exported: int) -> None:
         export_id: Export ID to update
         rows_exported: Number of rows exported
     """
-    export_table = get_export_table()
     now = datetime.datetime.now(datetime.timezone.utc)
 
     query = f"""
-    UPDATE `{export_table}`
+    UPDATE `{EXPORT_METADATA_TABLE}`
     SET status = @status,
         rows_exported = @rows_exported,
         completed_at = @completed_at
@@ -151,7 +130,6 @@ def fail_export(export_id: str, error_message: str) -> None:
         export_id: Export ID to update
         error_message: Error message for the failure
     """
-    export_table = get_export_table()
     now = datetime.datetime.now(datetime.timezone.utc)
 
     # Truncate error message if it's too long
@@ -159,7 +137,7 @@ def fail_export(export_id: str, error_message: str) -> None:
         error_message = error_message[:1021] + "..."
 
     query = f"""
-    UPDATE `{export_table}`
+    UPDATE `{EXPORT_METADATA_TABLE}`
     SET status = @status,
         error_message = @error_message,
         completed_at = @completed_at
@@ -190,11 +168,9 @@ def get_export_status(export_id: str) -> Dict[str, Any]:
     Returns:
         Dict[str, Any]: Export status details
     """
-    export_table = get_export_table()
-
     query = f"""
     SELECT *
-    FROM `{export_table}`
+    FROM `{EXPORT_METADATA_TABLE}`
     WHERE export_id = @export_id
     """
 
@@ -231,7 +207,6 @@ def record_processed_hashes(export_id: str, export_name: str, temp_table_name: s
         cprint("No temp table provided for hash recording", severity="WARNING")
         return 0
 
-    hash_table = get_processed_hashes_table()
     now = datetime.datetime.now(datetime.timezone.utc)
 
     # Insert hashes from temp table
@@ -244,7 +219,7 @@ def record_processed_hashes(export_id: str, export_name: str, temp_table_name: s
         @export_name AS export_name,
         @processed_at AS processed_at
     )
-    INSERT INTO `{hash_table}` (export_id, export_name, row_hash, processed_at)
+    INSERT INTO `{EXPORT_PROCESSED_HASHES_TABLE}` (export_id, export_name, row_hash, processed_at)
     SELECT 
       parameters.export_id, 
       parameters.export_name,
@@ -261,14 +236,14 @@ def record_processed_hashes(export_id: str, export_name: str, temp_table_name: s
         ]
     )
 
-    cprint(f"Recording processed hashes from {temp_table_name} to {hash_table}")
+    cprint(f"Recording processed hashes from {temp_table_name} to {EXPORT_PROCESSED_HASHES_TABLE}")
     query_job = client.query(query, job_config=job_config)
     query_job.result()
 
     # Count inserted rows
     count_query = f"""
     SELECT COUNT(*) as count
-    FROM `{hash_table}`
+    FROM `{EXPORT_PROCESSED_HASHES_TABLE}`
     WHERE export_id = @export_id
     """
 
@@ -325,8 +300,8 @@ if __name__ == "__main__":
     # Execute the requested command
     if args.command == "show-tables" or args.command is None:
         # Default action is to show table names
-        print(f"Export metadata table: {get_export_table()}")
-        print(f"Processed hashes table: {get_processed_hashes_table()}")
+        print(f"Export metadata table: {EXPORT_METADATA_TABLE}")
+        print(f"Processed hashes table: {EXPORT_PROCESSED_HASHES_TABLE}")
         print("Use SQL scripts to create these tables manually")
 
     elif args.command == "start":
