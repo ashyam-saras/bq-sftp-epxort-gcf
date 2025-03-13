@@ -1,0 +1,66 @@
+{
+    "sftp": {
+        "host": "sftp.boxouthealth.com",
+        "port": 22,
+        "username": "saras",
+        "password": "1pEphpq1",
+        "directory": "/saras",
+        "upload_method": "download"
+    },
+    "gcs": {
+        "bucket": "boxout-sftp-transfer"
+    },
+    "metadata": {
+        "dataset": "boxoutllc_sftp_metadata",
+        "export_metadata_table": "insightsprod.boxoutllc_sftp_metadata.export_metadata",
+        "processed_hashes_table": "insightsprod.boxoutllc_sftp_metadata.export_processed_hashes"
+    },
+    "exports": {
+        "account_overview_sales": {
+            "source_table": "insightsprod.boxoutllc_4517_prod_presentation.account_overview_sales",
+            "compress": true,
+            "incremental": true,
+            "hash_columns": [
+                "customer_id",
+                "order_id",
+                "order_tags",
+                "date",
+                "transaction_type",
+                "acquisition_date",
+                "acquisition_month",
+                "new_or_existing",
+                "last_order_date",
+                "order_type_by_business",
+                "order_type_by_subscription",
+                "order_month",
+                "brand_name",
+                "platform_name",
+                "store_name",
+                "parent_asin",
+                "product_id",
+                "product_name",
+                "product_name_actual",
+                "product_category",
+                "sku",
+                "currency_code",
+                "city",
+                "district",
+                "state",
+                "country",
+                "postal_code",
+                "revenue",
+                "item_discount",
+                "quantity",
+                "refunded_amount_by_order_date",
+                "refunded_quantity_by_order_date",
+                "refunded_amount_by_return_date",
+                "refunded_quantity_by_return_date"
+            ]
+        },
+        "amazon_account_overview_sales_marketing_profit": {
+            "source_table": "insightsprod.boxoutllc_4517_prod_presentation.amazon_account_overview_sales_marketing_profit",
+            "compress": true,
+            "incremental": false
+        }
+    }
+}
