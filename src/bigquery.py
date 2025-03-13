@@ -146,11 +146,6 @@ def export_table_to_gcs(
     # Get row count
     row_count = get_row_count(source_to_extract)
 
-    # Clean up temporary table if one was created
-    if temp_table_name:
-        client.delete_table(temp_table_id)
-        cprint(f"Deleted temporary table {temp_table_id}")
-
     return gcs_uri, row_count, temp_table_name
 
 
