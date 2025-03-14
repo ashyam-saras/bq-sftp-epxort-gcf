@@ -9,9 +9,13 @@ import os
 import uuid
 from typing import Any, Dict
 
+from dotenv import load_dotenv
 from google.cloud import bigquery
 
 from src.helpers import cprint
+
+# Load environment variables
+load_dotenv()
 
 # Create a shared BigQuery client
 client = bigquery.Client()
