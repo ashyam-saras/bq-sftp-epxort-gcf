@@ -6,6 +6,7 @@ and managing the export jobs.
 
 import argparse
 import datetime
+import time
 import uuid
 from typing import List, Optional, Tuple
 
@@ -30,7 +31,9 @@ def construct_gcs_uri(bucket: str, export_name: str, date: datetime.date) -> str
         str: GCS URI prefix for export files
     """
     date_str = date.strftime(r"%Y%m%d")
-    return f"gs://{bucket}/{export_name}/{date_str}/{export_name}-{date_str}-*.csv"
+    uri = f"gs://{bucket}/{export_name}/{date_str}/{export_name}-{date_str}-*.csv"
+    cprint(f"Constructed GCS URI: {uri}")
+    return uri
 
 
 def build_export_query(
@@ -56,10 +59,12 @@ def build_export_query(
     """
     # Option 1: Date range filter
     if date_column and days_lookback is not None:
-        return f"""
+        query = f"""
         SELECT * FROM `{source_table}`
         WHERE {date_column} >= DATE_SUB(CURRENT_DATE(), INTERVAL {days_lookback} DAY)
         """
+        cprint(f"Building date range query with lookback of {days_lookback} days on column {date_column}")
+        return query
 
     # Option 2: Hash-based incremental export
     if hash_columns and processed_hashes_table:
@@ -68,15 +73,18 @@ def build_export_query(
         hash_expression = f"TO_HEX(MD5(CONCAT({hash_columns_concat})))"
 
         # Build incremental query that filters out already processed hashes
-        return f"""
+        query = f"""
         SELECT t.*, {hash_expression} AS row_hash 
         FROM `{source_table}` t
         WHERE {hash_expression} NOT IN (
           SELECT row_hash FROM `{processed_hashes_table}`
         )
         """
+        cprint(f"Building incremental hash-based query with {len(hash_columns)} columns")
+        return query
 
     # Option 3: Full export - select all data
+    cprint(f"Building full export query for {source_table}")
     return f"SELECT * FROM `{source_table}`"
 
 
@@ -104,7 +112,9 @@ def export_table_to_gcs(
     Returns:
         Tuple[str, int, str]: (destination_uri, row_count, temp_table_name or empty string)
     """
+    start_time = time.time()
     temp_table_name = ""
+    cprint(f"Starting export process for {source_table}", severity="INFO")
 
     # For hash-based incremental exports, create a temporary table
     if hash_columns and processed_hashes_table:
@@ -117,6 +127,7 @@ def export_table_to_gcs(
             processed_hashes_table=processed_hashes_table,
         )
         source_to_extract = temp_table_id
+        cprint(f"Using incremental export with temp table {temp_table_id}")
 
     # For date range exports, create a temporary table
     elif date_column and days_lookback is not None:
@@ -125,14 +136,16 @@ def export_table_to_gcs(
 
         query = build_export_query(source_table=source_table, date_column=date_column, days_lookback=days_lookback)
         source_to_extract = temp_table_id
+        cprint(f"Using date range export with temp table {temp_table_id}")
 
     # For full exports, use the source table directly
     else:
         source_to_extract = source_table
+        cprint(f"Using full export directly from source table")
 
     # If we need to create a temp table
     if temp_table_name:
-        cprint(f"Creating temporary table {temp_table_id} for filtered export", query=query)
+        cprint(f"Creating temporary table {temp_table_id} for filtered export", severity="INFO", query=query)
 
         # Execute query to create temp table
         job_config = bigquery.QueryJobConfig(destination=temp_table_id)
@@ -144,21 +157,34 @@ def export_table_to_gcs(
     job_config.print_header = True
 
     if compression:
-        cprint(f"Exporting {source_to_extract} to {gcs_uri} with GZIP compression")
+        cprint(f"Exporting {source_to_extract} to {gcs_uri} with GZIP compression", severity="INFO")
         job_config.compression = bigquery.Compression.GZIP
         if not gcs_uri.endswith(".gz"):
             gcs_uri = f"{gcs_uri}.gz"
     else:
-        cprint(f"Exporting {source_to_extract} to {gcs_uri} without compression")
+        cprint(f"Exporting {source_to_extract} to {gcs_uri} without compression", severity="INFO")
 
     # Start the extract job
+    extract_start_time = time.time()
     extract_job = client.extract_table(source_to_extract, gcs_uri, job_config=job_config)
 
     # Wait for job to complete
-    extract_job.result()
+    result = extract_job.result()
+    extract_time = time.time() - extract_start_time
+    cprint(f"Extract job completed in {extract_time:.2f} seconds", severity="INFO")
 
     # Get row count
     row_count = get_row_count(source_to_extract)
+
+    total_time = time.time() - start_time
+    cprint(
+        f"Export process complete for {source_table} in {total_time:.2f} seconds",
+        severity="INFO",
+        rows=row_count,
+        destination=gcs_uri,
+        total_time_seconds=f"{total_time:.2f}",
+        temp_table=temp_table_name if temp_table_name else "none",
+    )
 
     return gcs_uri, row_count, temp_table_name
 
@@ -173,13 +199,17 @@ def get_row_count(table_name: str) -> int:
     Returns:
         int: Number of rows in the table
     """
+    cprint(f"Getting row count for {table_name}")
     query = f"SELECT COUNT(*) as count FROM `{table_name}`"
     query_job = client.query(query)
     results = query_job.result()
 
     for row in results:
-        return row.count
+        count = row.count
+        cprint(f"Row count for {table_name}: {count:,}")
+        return count
 
+    cprint(f"No results found when getting row count for {table_name}", severity="WARNING")
     return 0
 
 
@@ -206,13 +236,13 @@ def delete_table(table_name: str, source_table: str = None) -> bool:
         else:
             table_id = table_name
 
-        cprint(f"Deleting table {table_id}")
+        cprint(f"Deleting table {table_id}", severity="INFO")
         client.delete_table(table_id)
-        cprint(f"Table {table_id} deleted successfully")
+        cprint(f"Table {table_id} deleted successfully", severity="INFO")
         return True
 
     except Exception as e:
-        cprint(f"Failed to delete table {table_name}: {str(e)}", severity="WARNING")
+        cprint(f"Failed to delete table {table_name}: {str(e)}", severity="WARNING", error=str(e))
         return False
 
 
