@@ -79,11 +79,11 @@ def export_to_sftp(config: Dict[str, Any], export_name: str, date: Optional[date
     gcs_uri_prefix = construct_gcs_uri(gcs_bucket, export_name, date)
     remote_filename = f"{export_name}-{date_str}.csv"
 
-    # SFTP folder structure - use export name as folder
+    # SFTP folder structure
     base_dir = PurePosixPath(sftp_config["directory"])
-    sftp_dir = str(base_dir / export_name)
+    sftp_dir = str(base_dir / date_str / export_name)
     sftp_config = {**sftp_config, "directory": sftp_dir}
-    cprint(f"SFTP destination directory: {sftp_dir}")
+    cprint(f"SFTP destination directory: {sftp_dir}", severity="INFO")
 
     try:
         # 1. Record start of export
