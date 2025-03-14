@@ -113,7 +113,7 @@ def export_to_sftp(config: Dict[str, Any], export_name: str, date: Optional[date
 
         # 4. Upload from GCS to SFTP - Modified to handle sharded files
         step_start = time.time()
-        cprint(f"Step 4: Uploading files to SFTP", severity="INFO")
+        cprint(f"Uploading files to SFTP", severity="INFO")
 
         # Handle GCS sharding by checking if destination_uri has a wildcard
         files_transferred = 0
