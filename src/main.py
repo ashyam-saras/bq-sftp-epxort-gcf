@@ -10,7 +10,9 @@ import time
 from pathlib import PurePosixPath
 from typing import Any, Dict, Optional
 
-from src.bigquery import construct_gcs_uri, export_table_to_gcs
+from google.cloud import storage
+
+from src.bigquery import construct_gcs_uri, delete_table, export_table_to_gcs
 from src.config import load_config
 from src.helpers import cprint
 from src.metadata import complete_export, fail_export, record_processed_hashes, start_export
@@ -91,9 +93,44 @@ def export_to_sftp(config: Dict[str, Any], export_name: str, date: Optional[date
         cprint("Verifying SFTP credentials")
         check_sftp_credentials(sftp_config)
 
-        # 4. Upload from GCS to SFTP
-        cprint(f"Uploading exported file to SFTP as {remote_filename}")
-        upload_from_gcs(sftp_config=sftp_config, gcs_uri=destination_uri, remote_filename=remote_filename)
+        # 4. Upload from GCS to SFTP - Modified to handle sharded files
+        cprint(f"Uploading exported files to SFTP")
+
+        # Handle GCS sharding by checking if destination_uri has a wildcard
+        if "*" in destination_uri:
+            # Get the bucket and prefix from the destination URI
+            bucket_name = destination_uri.split("/")[2]
+            prefix = "/".join(destination_uri.split("/")[3:]).replace("*", "")
+
+            # List all files in the bucket with the prefix
+            storage_client = storage.Client()
+            bucket = storage_client.bucket(bucket_name)
+            blobs = list(bucket.list_blobs(prefix=prefix))
+
+            cprint(f"Found {len(blobs)} files to upload to SFTP")
+
+            # Upload each file with an appropriate name
+            for i, blob in enumerate(blobs):
+                # Create suffix for multiple files
+                file_suffix = f"-part{i+1:03d}" if len(blobs) > 1 else ""
+                # Remove .gz extension if needed for naming but keep for upload
+                remote_file = f"{export_name}-{date_str}{file_suffix}.csv"
+                if blob.name.endswith(".gz"):
+                    remote_file += ".gz"
+
+                cprint(f"Uploading file {i+1} of {len(blobs)}: {blob.name} to {remote_file}")
+                upload_from_gcs(
+                    sftp_config=sftp_config,
+                    gcs_uri=f"gs://{bucket_name}/{blob.name}",
+                    remote_filename=remote_file,
+                )
+        else:
+            # Single file case
+            remote_filename = f"{export_name}-{date_str}.csv"
+            if destination_uri.endswith(".gz"):
+                remote_filename += ".gz"
+
+            upload_from_gcs(sftp_config=sftp_config, gcs_uri=destination_uri, remote_filename=remote_filename)
 
         # 5. For incremental exports, record processed hashes
         if export_type == "incremental" and temp_table:
@@ -105,8 +142,13 @@ def export_to_sftp(config: Dict[str, Any], export_name: str, date: Optional[date
         cprint(f"Export completed successfully with {row_count} rows")
         complete_export(export_id, row_count)
 
+        # 7. Clean up temporary table if it exists (now using the dedicated function)
+        if temp_table:
+            cprint(f"Cleaning up temporary table {temp_table}")
+            delete_table(temp_table, source_table)
+
         # Use path joining with / operator for display path
-        destination_path = f"{sftp_dir}/{remote_filename}"
+        destination_path = f"{sftp_dir}/{remote_filename if 'remote_filename' in locals() else '*.csv.gz'}"
 
         return {
             "status": "success",
@@ -115,6 +157,7 @@ def export_to_sftp(config: Dict[str, Any], export_name: str, date: Optional[date
             "rows_exported": row_count,
             "destination": destination_path,
             "date": date_str,
+            "files_transferred": len(blobs) if "blobs" in locals() else 1,
         }
 
     except Exception as e:
@@ -122,6 +165,10 @@ def export_to_sftp(config: Dict[str, Any], export_name: str, date: Optional[date
         cprint(f"Export failed: {str(e)}", severity="ERROR")
         if export_id:
             fail_export(export_id, str(e))
+
+        # Clean up temporary table on failure (also using the dedicated function)
+        if temp_table:
+            delete_table(temp_table, source_table)
 
         raise
 
