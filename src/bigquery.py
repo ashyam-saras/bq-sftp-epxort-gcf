@@ -123,11 +123,7 @@ def export_table_to_gcs(
         temp_table_name = f"temp_export_date_{uuid.uuid4().hex[:8]}"
         temp_table_id = f"{source_table.split('.')[0]}.{source_table.split('.')[1]}.{temp_table_name}"
 
-        query = build_export_query(
-            source_table=source_table, 
-            date_column=date_column, 
-            days_lookback=days_lookback
-        )
+        query = build_export_query(source_table=source_table, date_column=date_column, days_lookback=days_lookback)
         source_to_extract = temp_table_id
 
     # For full exports, use the source table directly
@@ -185,6 +181,39 @@ def get_row_count(table_name: str) -> int:
         return row.count
 
     return 0
+
+
+def delete_table(table_name: str, source_table: str = None) -> bool:
+    """
+    Deletes a BigQuery table, especially useful for cleaning up temporary tables.
+
+    Args:
+        table_name: Name of the table to delete, can be just the name or fully qualified
+        source_table: Optional source table to derive project and dataset if not provided in table_name
+
+    Returns:
+        bool: True if deletion was successful, False otherwise
+    """
+    try:
+        # Handle case where we only have the table name without project and dataset
+        if "." not in table_name and source_table:
+            # Extract project and dataset from source_table
+            parts = source_table.split(".")
+            if len(parts) >= 2:
+                table_id = f"{parts[0]}.{parts[1]}.{table_name}"
+            else:
+                table_id = table_name
+        else:
+            table_id = table_name
+
+        cprint(f"Deleting table {table_id}")
+        client.delete_table(table_id)
+        cprint(f"Table {table_id} deleted successfully")
+        return True
+
+    except Exception as e:
+        cprint(f"Failed to delete table {table_name}: {str(e)}", severity="WARNING")
+        return False
 
 
 if __name__ == "__main__":
