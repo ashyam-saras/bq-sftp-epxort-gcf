@@ -99,13 +99,12 @@ def export_to_sftp(config: Dict[str, Any], export_name: str, date: Optional[date
         # Handle GCS sharding by checking if destination_uri has a wildcard
         if "*" in destination_uri:
             # Get the bucket and prefix from the destination URI
-            bucket_name = destination_uri.split("/")[2]
-            prefix = "/".join(destination_uri.split("/")[3:]).replace("*", "")
+            bucket_name, prefix = destination_uri.strip("gs://").split("/", 1)
 
             # List all files in the bucket with the prefix
             storage_client = storage.Client()
             bucket = storage_client.bucket(bucket_name)
-            blobs = list(bucket.list_blobs(prefix=prefix))
+            blobs = list(bucket.list_blobs(match_glob=prefix))
 
             cprint(f"Found {len(blobs)} files to upload to SFTP")
 
@@ -242,6 +241,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # Load configuration
+    print(args.config)
     config = load_config(args.config)
 
     # Parse date if provided
