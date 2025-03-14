@@ -16,7 +16,7 @@ from src.bigquery import construct_gcs_uri, delete_table, export_table_to_gcs
 from src.config import load_config
 from src.helpers import cprint
 from src.metadata import complete_export, fail_export, record_processed_hashes, start_export
-from src.sftp import check_sftp_credentials, upload_from_gcs
+from src.sftp import check_sftp_credentials, upload_from_gcs, upload_from_gcs_batch
 
 
 def export_to_sftp(config: Dict[str, Any], export_name: str, date: Optional[datetime.date] = None) -> Dict[str, Any]:
@@ -116,7 +116,6 @@ def export_to_sftp(config: Dict[str, Any], export_name: str, date: Optional[date
         cprint(f"Uploading files to SFTP", severity="INFO")
 
         # Handle GCS sharding by checking if destination_uri has a wildcard
-        files_transferred = 0
         if "*" in destination_uri:
             # Get the bucket and prefix from the destination URI
             bucket_name, prefix = destination_uri.strip("gs://").split("/", 1)
@@ -139,36 +138,33 @@ def export_to_sftp(config: Dict[str, Any], export_name: str, date: Optional[date
                 list_time=f"{time.time() - list_start:.2f}s",
             )
 
-            # Show names of files being transferred for debugging
-            if len(blobs) > 0:
-                file_names = [blob.name for blob in blobs]
-                cprint(f"Files to transfer: {file_names[:5]}{'...' if len(file_names) > 5 else ''}")
-
-            # Upload each file with an appropriate name
+            # Prepare the file mappings for batch upload
+            file_mappings = []
             for i, blob in enumerate(blobs):
                 # Create suffix for multiple files
-                file_suffix = f"-{i+1:03d}" if len(blobs) > 1 else ""
-                # Remove .gz extension if needed for naming but keep for upload
+                file_suffix = f"-{i+1:012d}" if len(blobs) > 1 else ""
                 remote_file = f"{export_name}-{date_str}{file_suffix}.csv"
                 if blob.name.endswith(".gz"):
                     remote_file += ".gz"
 
-                cprint(
-                    f"Uploading file {i+1} of {len(blobs)}: {blob.name}",
-                    severity="INFO",
-                    destination=remote_file,
-                    progress=f"{i+1}/{len(blobs)}",
-                )
+                file_mappings.append((f"gs://{bucket_name}/{blob.name}", remote_file))
 
-                upload_from_gcs(
-                    sftp_config=sftp_config,
-                    gcs_uri=f"gs://{bucket_name}/{blob.name}",
-                    remote_filename=remote_file,
-                )
-                files_transferred += 1
+            # Show names of files being transferred (still useful for debugging)
+            if file_mappings:
+                sample_files = file_mappings[:5]
+                cprint(f"Files to transfer: {sample_files}{'...' if len(file_mappings) > 5 else ''}")
+
+            # Use the optimized batch upload function
+            files_transferred = upload_from_gcs_batch(sftp_config, file_mappings)
+
+            cprint(
+                f"SFTP upload complete: {files_transferred} files transferred",
+                severity="INFO",
+                step_time=f"{time.time() - step_start:.2f}s",
+            )
 
         else:
-            # Single file case
+            # Single file case remains unchanged
             remote_filename = f"{export_name}-{date_str}.csv"
             if destination_uri.endswith(".gz"):
                 remote_filename += ".gz"
@@ -191,21 +187,15 @@ def export_to_sftp(config: Dict[str, Any], export_name: str, date: Optional[date
 
         # 5. For incremental exports, record processed hashes
         if export_type == "incremental" and temp_table:
-            step_start = time.time()
             cprint("Recording processed hashes", severity="INFO")
             hashes_recorded = record_processed_hashes(export_id, export_name, temp_table)
-            cprint(
-                f"Recorded {hashes_recorded} new hash records",
-                severity="INFO",
-                step_time=f"{time.time() - step_start:.2f}s",
-            )
+            cprint(f"Recorded {hashes_recorded} new hash records", severity="INFO")
 
         # 6. Record export completion
         complete_export(export_id, row_count)
 
         # 7. Clean up temporary table if it exists
         if temp_table:
-            step_start = time.time()
             cprint("Cleaning up temporary resources", severity="INFO")
             delete_table(temp_table, source_table)
 

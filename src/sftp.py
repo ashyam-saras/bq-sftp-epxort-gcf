@@ -8,7 +8,7 @@ import shutil
 import tempfile
 import time
 from pathlib import PurePosixPath
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, List, Tuple
 
 import paramiko
 from google.cloud import storage
@@ -140,6 +140,99 @@ def upload_from_gcs(sftp_config: Dict[str, Any], gcs_uri: str, remote_filename: 
         error_time = time.time() - start_time
         error_message = f"SFTP upload failed after {error_time:.2f}s: {str(e)}"
         cprint(error_message, severity="ERROR", gcs_uri=gcs_uri, destination=str(remote_file_path))
+        raise ConfigError(error_message)
+
+
+def upload_from_gcs_batch(sftp_config: Dict[str, Any], file_mappings: List[Tuple[str, str]]) -> int:
+    """
+    Upload multiple files from GCS to SFTP server using a single connection.
+
+    Args:
+        sftp_config: SFTP connection configuration
+        file_mappings: List of (gcs_uri, remote_filename) tuples to transfer
+
+    Returns:
+        int: Number of files successfully transferred
+    """
+    if not file_mappings:
+        cprint("No files to transfer", severity="WARNING")
+        return 0
+
+    # Extract connection parameters
+    host = sftp_config["host"]
+    port = int(sftp_config.get("port", 22))
+    username = sftp_config["username"]
+    directory = sftp_config["directory"]
+    upload_method = sftp_config.get("upload_method", "download")
+
+    start_time = time.time()
+    files_transferred = 0
+
+    cprint(
+        f"Starting batch upload of {len(file_mappings)} files to SFTP", severity="INFO", host=host, directory=directory
+    )
+
+    try:
+        # Establish connection once
+        cprint(f"Connecting to SFTP server at {host}:{port}")
+        transport = paramiko.Transport((host, port))
+        transport.connect(username=username, password=sftp_config["password"])
+        sftp = paramiko.SFTPClient.from_transport(transport)
+
+        # Create directory if it doesn't exist
+        ensure_sftp_directory(sftp, PurePosixPath(directory))
+
+        # Transfer each file using the same connection
+        for i, (gcs_uri, remote_filename) in enumerate(file_mappings):
+            file_start = time.time()
+            try:
+                # Get GCS blob
+                bucket_name, blob_name = parse_gcs_uri(gcs_uri)
+                storage_client = storage.Client()
+                bucket = storage_client.bucket(bucket_name)
+                blob = bucket.get_blob(blob_name)
+
+                if not blob:
+                    cprint(f"File not found in GCS: {gcs_uri}", severity="ERROR")
+                    continue
+
+                # Build full remote path
+                remote_path = PurePosixPath(directory) / remote_filename
+
+                # Use the selected upload method
+                if upload_method == "stream":
+                    _stream_direct(sftp, blob, str(remote_path))
+                else:
+                    _download_and_upload(sftp, blob, str(remote_path))
+
+                files_transferred += 1
+                file_time = time.time() - file_start
+                cprint(
+                    f"Transferred file {i+1}/{len(file_mappings)}: {remote_filename}",
+                    severity="INFO",
+                    transfer_time=f"{file_time:.2f}s",
+                )
+
+            except Exception as e:
+                cprint(f"Failed to transfer file {gcs_uri} to {remote_filename}: {str(e)}", severity="ERROR")
+
+        # Close SFTP connection
+        sftp.close()
+        transport.close()
+
+        total_time = time.time() - start_time
+        cprint(
+            f"Batch upload complete: {files_transferred}/{len(file_mappings)} files transferred",
+            severity="INFO",
+            total_time=f"{total_time:.2f}s",
+        )
+
+        return files_transferred
+
+    except Exception as e:
+        total_time = time.time() - start_time
+        error_message = f"SFTP batch upload failed after {total_time:.2f}s: {str(e)}"
+        cprint(error_message, severity="ERROR")
         raise ConfigError(error_message)
 
 
