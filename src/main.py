@@ -111,7 +111,7 @@ def export_to_sftp(config: Dict[str, Any], export_name: str, date: Optional[date
             # Upload each file with an appropriate name
             for i, blob in enumerate(blobs):
                 # Create suffix for multiple files
-                file_suffix = f"-part{i+1:03d}" if len(blobs) > 1 else ""
+                file_suffix = f"-part{i+1:012d}" if len(blobs) > 1 else ""
                 # Remove .gz extension if needed for naming but keep for upload
                 remote_file = f"{export_name}-{date_str}{file_suffix}.csv"
                 if blob.name.endswith(".gz"):
