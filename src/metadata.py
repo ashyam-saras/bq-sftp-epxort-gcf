@@ -63,7 +63,7 @@ def start_export(export_name: str, source_table: str, destination_uri: str) -> s
         ]
     )
 
-    cprint(f"Starting export {export_id} for {export_name}")
+    cprint(f"Starting export {export_id} for {export_name}", severity="INFO")
     query_job = client.query(query, job_config=job_config)
     query_job.result()
 
@@ -98,7 +98,7 @@ def complete_export(export_id: str, rows_exported: int) -> None:
         ]
     )
 
-    cprint(f"Marking export {export_id} as complete", rows_exported=rows_exported)
+    cprint(f"Marking export {export_id} as complete", severity="INFO", rows_exported=rows_exported)
     query_job = client.query(query, job_config=job_config)
     query_job.result()
 
@@ -217,7 +217,7 @@ def record_processed_hashes(export_id: str, export_name: str, temp_table_name: s
         ]
     )
 
-    cprint(f"Recording processed hashes from {temp_table_name} to {EXPORT_PROCESSED_HASHES_TABLE}")
+    cprint(f"Recording processed hashes from {temp_table_name} to {EXPORT_PROCESSED_HASHES_TABLE}", severity="INFO")
     query_job = client.query(query, job_config=job_config)
     query_job.result()
 
