@@ -140,19 +140,18 @@ def export_to_sftp(config: Dict[str, Any], export_name: str, date: Optional[date
 
             # Prepare the file mappings for batch upload
             file_mappings = []
-            for i, blob in enumerate(blobs):
-                # Create suffix for multiple files
-                file_suffix = f"-{i+1:012d}" if len(blobs) > 1 else ""
-                remote_file = f"{export_name}-{date_str}{file_suffix}.csv"
-                if blob.name.endswith(".gz"):
-                    remote_file += ".gz"
+            for blob in blobs:
+                # Extract just the filename from the blob path
+                original_filename = blob.name.split("/")[-1]
 
-                file_mappings.append((f"gs://{bucket_name}/{blob.name}", remote_file))
+                # Use the original GCS filename directly
+                file_mappings.append((f"gs://{bucket_name}/{blob.name}", original_filename))
 
             # Show names of files being transferred (still useful for debugging)
             if file_mappings:
-                sample_files = file_mappings[:5]
-                cprint(f"Files to transfer: {sample_files}{'...' if len(file_mappings) > 5 else ''}")
+                sample_files = [f[1] for f in file_mappings[:5]]
+                sample_display = ", ".join(sample_files)
+                cprint(f"Files to transfer: {sample_display}{'...' if len(file_mappings) > 5 else ''}")
 
             # Use the optimized batch upload function
             files_transferred = upload_from_gcs_batch(sftp_config, file_mappings)
