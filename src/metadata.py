@@ -5,38 +5,19 @@ Handles tracking export status and maintaining incremental export hash tables.
 
 import argparse
 import datetime
+import os
 import uuid
 from typing import Any, Dict
 
 from google.cloud import bigquery
 
-from src.config import ConfigError, load_config
 from src.helpers import cprint
 
 # Create a shared BigQuery client
 client = bigquery.Client()
 
-# Load config when module is imported - will fail if config is missing or invalid
-try:
-    config = load_config()
-    metadata_config = config.get("metadata", {})
-
-    # Get fully qualified table names directly from config - required, no fallbacks
-    if "export_metadata_table" not in metadata_config:
-        raise ConfigError("Required configuration 'metadata.export_metadata_table' is missing")
-
-    if "processed_hashes_table" not in metadata_config:
-        raise ConfigError("Required configuration 'metadata.processed_hashes_table' is missing")
-
-    EXPORT_METADATA_TABLE = metadata_config["export_metadata_table"]
-    EXPORT_PROCESSED_HASHES_TABLE = metadata_config["processed_hashes_table"]
-
-    cprint(f"Metadata tables configured: {EXPORT_METADATA_TABLE}, {EXPORT_PROCESSED_HASHES_TABLE}")
-
-except Exception as e:
-    # Re-raise any configuration errors
-    cprint(f"Configuration error in metadata module: {str(e)}", severity="ERROR")
-    raise
+EXPORT_METADATA_TABLE = os.environ["EXPORT_METADATA_TABLE"]
+EXPORT_PROCESSED_HASHES_TABLE = os.getenv("EXPORT_PROCESSED_HASHES_TABLE", "project.dataset.export_processed_hashes")
 
 # Export status constants
 STATUS_STARTED = "STARTED"
