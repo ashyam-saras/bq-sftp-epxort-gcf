@@ -106,5 +106,24 @@ def _validate_config(config: Dict[str, Any]) -> None:
         raise ConfigError("No exports defined in configuration")
 
     for name, export in config["exports"].items():
+        # Validate required fields
         if not export.get("source_table"):
             raise ConfigError(f"Missing source_table in export: {name}")
+
+        # Validate export type
+        export_type = export.get("export_type", "full")
+        if export_type not in ["full", "incremental", "date_range"]:
+            raise ConfigError(f"Invalid export_type '{export_type}' in export: {name}")
+
+        if export_type == "incremental":
+            if not export.get("hash_columns") or not isinstance(export.get("hash_columns"), list):
+                raise ConfigError(f"Missing or invalid hash_columns for incremental export: {name}")
+
+            if "metadata" not in config or "processed_hashes_table" not in config["metadata"]:
+                raise ConfigError(f"Missing processed_hashes_table in metadata config for incremental export: {name}")
+
+        if export_type == "date_range":
+            if not export.get("date_column"):
+                raise ConfigError(f"Missing date_column for date_range export: {name}")
+            if not export.get("days_lookback"):
+                raise ConfigError(f"Missing days_lookback for date_range export: {name}")

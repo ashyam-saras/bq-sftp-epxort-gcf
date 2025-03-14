@@ -44,10 +44,22 @@ def export_to_sftp(config: Dict[str, Any], export_name: str, date: Optional[date
     gcs_bucket = config["gcs"]["bucket"]
     sftp_config = config["sftp"]
 
-    # Should we use incremental export?
-    use_incremental = export_config.get("incremental", False)
-    hash_columns = export_config.get("hash_columns", []) if use_incremental else None
-    processed_hashes_table = config["metadata"].get("processed_hashes_table") if use_incremental else None
+    # Determine export type and parameters
+    export_type = export_config.get("export_type", "full")
+
+    # Parameters for incremental exports
+    hash_columns = None
+    processed_hashes_table = None
+    if export_type == "incremental":
+        hash_columns = export_config.get("hash_columns", [])
+        processed_hashes_table = config["metadata"].get("processed_hashes_table")
+
+    # Parameters for date range exports
+    date_column = None
+    days_lookback = None
+    if export_type == "date_range":
+        date_column = export_config.get("date_column")
+        days_lookback = export_config.get("days_lookback")
 
     # Prepare paths and filenames
     gcs_uri_prefix = construct_gcs_uri(gcs_bucket, export_name, date)
@@ -64,12 +76,14 @@ def export_to_sftp(config: Dict[str, Any], export_name: str, date: Optional[date
         export_id = start_export(export_name, source_table, gcs_uri_prefix)
 
         # 2. Export from BigQuery to GCS
-        cprint(f"Exporting {source_table} to GCS")
+        cprint(f"Exporting {source_table} to GCS using {export_type} method")
         destination_uri, row_count, temp_table = export_table_to_gcs(
             source_table=source_table,
             gcs_uri=gcs_uri_prefix,
             hash_columns=hash_columns,
             processed_hashes_table=processed_hashes_table,
+            date_column=date_column,
+            days_lookback=days_lookback,
             compression=export_config.get("compress", True),
         )
 
@@ -82,7 +96,7 @@ def export_to_sftp(config: Dict[str, Any], export_name: str, date: Optional[date
         upload_from_gcs(sftp_config=sftp_config, gcs_uri=destination_uri, remote_filename=remote_filename)
 
         # 5. For incremental exports, record processed hashes
-        if use_incremental and temp_table:
+        if export_type == "incremental" and temp_table:
             cprint("Recording processed hashes for incremental export")
             hashes_recorded = record_processed_hashes(export_id, export_name, temp_table)
             cprint(f"Recorded {hashes_recorded} new hash records for incremental tracking")

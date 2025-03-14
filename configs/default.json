@@ -19,7 +19,7 @@
         "account_overview_sales": {
             "source_table": "insightsprod.boxoutllc_4517_prod_presentation.account_overview_sales",
             "compress": true,
-            "incremental": true,
+            "export_type": "incremental",
             "hash_columns": [
                 "customer_id",
                 "order_id",
@@ -60,7 +60,14 @@
         "amazon_account_overview_sales_marketing_profit": {
             "source_table": "insightsprod.boxoutllc_4517_prod_presentation.amazon_account_overview_sales_marketing_profit",
             "compress": true,
-            "incremental": false
+            "export_type": "full"
+        },
+        "account_overview_sales_last30days": {
+            "source_table": "insightsprod.boxoutllc_4517_prod_presentation.account_overview_sales",
+            "compress": true,
+            "export_type": "date_range",
+            "date_column": "date",
+            "days_lookback": 30
         }
     }
 }

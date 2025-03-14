@@ -37,51 +37,47 @@ def build_export_query(
     source_table: str,
     hash_columns: Optional[List[str]] = None,
     processed_hashes_table: Optional[str] = None,
+    date_column: Optional[str] = None,
+    days_lookback: Optional[int] = None,
 ) -> str:
     """
-    Builds SQL query for data export, handling incremental exports with hash-based filtering.
+    Builds SQL query for data export, handling incremental exports with hash-based filtering
+    or date-range based filtering.
 
     Args:
         source_table: Fully qualified source table (project.dataset.table)
         hash_columns: List of column names to use for row hashing (for incremental)
         processed_hashes_table: Table containing already processed hashes
+        date_column: Column name to use for date filtering (for date range exports)
+        days_lookback: Number of days to look back for date range exports
 
     Returns:
         str: SQL query for selecting data to export
+    """
+    # Option 1: Date range filter
+    if date_column and days_lookback is not None:
+        return f"""
+        SELECT * FROM `{source_table}`
+        WHERE {date_column} >= DATE_SUB(CURRENT_DATE(), INTERVAL {days_lookback} DAY)
+        """
 
-    Examples:
-        For a full export:
-        ```sql
-        SELECT * FROM `project.dataset.customers`
-        ```
+    # Option 2: Hash-based incremental export
+    if hash_columns and processed_hashes_table:
+        # Build the hash expression from specified columns
+        hash_columns_concat = ", ' | ', ".join([f"CAST({col} AS STRING)" for col in hash_columns])
+        hash_expression = f"TO_HEX(MD5(CONCAT({hash_columns_concat})))"
 
-        For an incremental export with hash-based filtering:
-        ```sql
-        SELECT t.*, TO_HEX(MD5(CONCAT(CAST(customer_id AS STRING), ' | ', CAST(last_updated AS STRING)))) AS row_hash
-        FROM `project.dataset.customers` t
-        WHERE TO_HEX(MD5(CONCAT(CAST(customer_id AS STRING), ' | ', CAST(last_updated AS STRING)))) NOT IN (
-          SELECT row_hash FROM `project.dataset.processed_hashes`
+        # Build incremental query that filters out already processed hashes
+        return f"""
+        SELECT t.*, {hash_expression} AS row_hash 
+        FROM `{source_table}` t
+        WHERE {hash_expression} NOT IN (
+          SELECT row_hash FROM `{processed_hashes_table}`
         )
-        ```
-    """
-    if not hash_columns or not processed_hashes_table:
-        # Full export - select all data
-        return f"SELECT * FROM `{source_table}`"
+        """
 
-    # Build the hash expression from specified columns
-    hash_columns_concat = ", ' | ', ".join([f"CAST({col} AS STRING)" for col in hash_columns])
-    hash_expression = f"TO_HEX(MD5(CONCAT({hash_columns_concat})))"
-
-    # Build incremental query that filters out already processed hashes
-    query = f"""
-    SELECT t.*, {hash_expression} AS row_hash 
-    FROM `{source_table}` t
-    WHERE {hash_expression} NOT IN (
-      SELECT row_hash FROM `{processed_hashes_table}`
-    )
-    """
-
-    return query
+    # Option 3: Full export - select all data
+    return f"SELECT * FROM `{source_table}`"
 
 
 def export_table_to_gcs(
@@ -89,6 +85,8 @@ def export_table_to_gcs(
     gcs_uri: str,
     hash_columns: Optional[List[str]] = None,
     processed_hashes_table: Optional[str] = None,
+    date_column: Optional[str] = None,
+    days_lookback: Optional[int] = None,
     compression: bool = True,
 ) -> Tuple[str, int, str]:
     """
@@ -99,31 +97,51 @@ def export_table_to_gcs(
         gcs_uri: GCS URI prefix to write files
         hash_columns: List of column names to use for row hashing (for incremental)
         processed_hashes_table: Table containing already processed hashes
+        date_column: Column name to use for date filtering
+        days_lookback: Number of days to look back
         compression: Whether to compress the output files (GZIP)
 
     Returns:
         Tuple[str, int, str]: (destination_uri, row_count, temp_table_name or empty string)
     """
+    temp_table_name = ""
+
+    # For hash-based incremental exports, create a temporary table
     if hash_columns and processed_hashes_table:
-        # For incremental exports, create a temporary table with unprocessed rows
         temp_table_name = f"temp_export_{uuid.uuid4().hex[:8]}"
         temp_table_id = f"{source_table.split('.')[0]}.{source_table.split('.')[1]}.{temp_table_name}"
 
-        query = build_export_query(source_table, hash_columns, processed_hashes_table)
+        query = build_export_query(
+            source_table=source_table,
+            hash_columns=hash_columns,
+            processed_hashes_table=processed_hashes_table,
+        )
+        source_to_extract = temp_table_id
 
-        cprint(f"Creating temporary table {temp_table_id} for incremental export", query=query)
+    # For date range exports, create a temporary table
+    elif date_column and days_lookback is not None:
+        temp_table_name = f"temp_export_date_{uuid.uuid4().hex[:8]}"
+        temp_table_id = f"{source_table.split('.')[0]}.{source_table.split('.')[1]}.{temp_table_name}"
+
+        query = build_export_query(
+            source_table=source_table, 
+            date_column=date_column, 
+            days_lookback=days_lookback
+        )
+        source_to_extract = temp_table_id
+
+    # For full exports, use the source table directly
+    else:
+        source_to_extract = source_table
+
+    # If we need to create a temp table
+    if temp_table_name:
+        cprint(f"Creating temporary table {temp_table_id} for filtered export", query=query)
 
         # Execute query to create temp table
         job_config = bigquery.QueryJobConfig(destination=temp_table_id)
         query_job = client.query(query, job_config=job_config)
         query_job.result()  # Wait for query to complete
-
-        # Use the temp table as our source
-        source_to_extract = temp_table_id
-    else:
-        # For full exports, use the source table directly
-        source_to_extract = source_table
-        temp_table_name = ""
 
     # Configure the extract job
     job_config = bigquery.ExtractJobConfig()
@@ -177,6 +195,8 @@ if __name__ == "__main__":
     parser.add_argument("--export-name", required=True, help="Export name for file organization")
     parser.add_argument("--hash-columns", help="Comma-separated list of columns for hashing")
     parser.add_argument("--processed-hashes-table", help="Table with already processed hashes")
+    parser.add_argument("--date-column", help="Column name to use for date filtering")
+    parser.add_argument("--days-lookback", type=int, help="Number of days to look back for date filtering")
     parser.add_argument("--no-compression", action="store_true", help="Disable GZIP compression")
     args = parser.parse_args()
 
@@ -194,6 +214,8 @@ if __name__ == "__main__":
         gcs_uri=gcs_uri,
         hash_columns=hash_columns,
         processed_hashes_table=args.processed_hashes_table,
+        date_column=args.date_column,
+        days_lookback=args.days_lookback,
         compression=compression,
     )
 
@@ -202,6 +224,8 @@ if __name__ == "__main__":
         gcs_uri=gcs_uri,
         hash_columns=hash_columns,
         processed_hashes_table=args.processed_hashes_table,
+        date_column=args.date_column,
+        days_lookback=args.days_lookback,
         compression=compression,
     )
 
