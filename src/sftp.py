@@ -68,21 +68,31 @@ def upload_from_gcs(sftp_config: Dict[str, Any], gcs_uri: str, remote_filename: 
     remote_path = PurePosixPath(directory)
     remote_file_path = remote_path / remote_filename
 
-    cprint(f"Uploading file from GCS to SFTP: {remote_file_path}")
+    cprint(
+        f"Starting upload from GCS to SFTP",
+        severity="INFO",
+        source=gcs_uri,
+        destination=f"{host}:{remote_file_path}",
+        method=upload_method,
+    )
 
     # Get GCS blob
-    bucket_name, blob_name = parse_gcs_uri(gcs_uri)
-    storage_client = storage.Client()
-    bucket = storage_client.bucket(bucket_name)
-    blob = bucket.get_blob(blob_name)
-
-    # Get blob size
-    blob_size = blob.size
-    cprint(f"File size: {blob_size:,} bytes ({blob_size / (1024*1024):.2f} MB)")
-
     try:
+        start_time = time.time()
+        bucket_name, blob_name = parse_gcs_uri(gcs_uri)
+        storage_client = storage.Client()
+        bucket = storage_client.bucket(bucket_name)
+        blob = bucket.get_blob(blob_name)
+
+        if not blob:
+            raise FileNotFoundError(f"File not found in GCS: {gcs_uri}")
+
+        # Get blob size for reporting
+        blob_size = blob.size
+        cprint(f"File located in GCS", file_size=f"{blob_size / (1024*1024):.2f} MB")
+
         # Connect to SFTP
-        cprint(f"Connecting to SFTP server at {host}:{port}")
+        cprint(f"Connecting to SFTP server at {host}:{port}", severity="INFO")
         transport = paramiko.Transport((host, port))
         transport.connect(username=username, password=password)
         sftp = paramiko.SFTPClient.from_transport(transport)
@@ -94,22 +104,42 @@ def upload_from_gcs(sftp_config: Dict[str, Any], gcs_uri: str, remote_filename: 
         method = upload_method
         if upload_method == "auto":
             method = "stream" if blob_size >= size_threshold else "download"
+            cprint(
+                f"Auto-selected '{method}' method based on file size",
+                file_size=f"{blob_size/(1024*1024):.2f} MB",
+                threshold=f"{size_threshold/(1024*1024):.2f} MB",
+            )
 
         # Use the selected method
+        transfer_start = time.time()
         if method == "stream":
-            cprint("Using direct streaming method")
+            cprint("Using direct streaming method", severity="INFO")
             _stream_direct(sftp, blob, str(remote_file_path))
         else:
-            cprint("Using download-upload method")
+            cprint("Using download-upload method", severity="INFO")
             _download_and_upload(sftp, blob, str(remote_file_path))
+
+        # Calculate total transfer time
+        transfer_time = time.time() - transfer_start
+        total_time = time.time() - start_time
 
         # Close connection
         sftp.close()
         transport.close()
 
+        cprint(
+            f"Upload completed successfully",
+            severity="INFO",
+            file=remote_filename,
+            size=f"{blob_size/(1024*1024):.2f} MB",
+            transfer_time=f"{transfer_time:.2f}s",
+            total_time=f"{total_time:.2f}s",
+        )
+
     except Exception as e:
-        error_message = f"SFTP upload failed: {str(e)}"
-        cprint(error_message, severity="ERROR")
+        error_time = time.time() - start_time
+        error_message = f"SFTP upload failed after {error_time:.2f}s: {str(e)}"
+        cprint(error_message, severity="ERROR", gcs_uri=gcs_uri, destination=str(remote_file_path))
         raise ConfigError(error_message)
 
 
@@ -163,24 +193,29 @@ def _stream_direct(sftp: paramiko.SFTPClient, blob: storage.Blob, remote_file_pa
     blob_size = blob.size
     start_time = time.time()
 
-    cprint(f"Beginning direct stream from GCS to SFTP")
+    cprint(
+        f"Starting direct stream transfer",
+        severity="INFO",
+        file_size=f"{blob_size/(1024*1024):.2f} MB",
+        destination=remote_file_path,
+    )
 
     with blob.open("rb") as source_file:
         with sftp.file(remote_file_path, "wb") as sftp_file:
             # Let the libraries handle the data transfer
-            # This creates a direct pipe between GCS and SFTP
-            # Use shutil.copyfileobj with a large buffer for efficiency
-            shutil.copyfileobj(source_file, sftp_file)  # 1MB buffer
+            shutil.copyfileobj(source_file, sftp_file)
 
-            # Since we can't track progress with copyfileobj, display completion
+            # Report completion metrics
             total_time = time.time() - start_time
-            cprint(f"Stream completed in {total_time:.1f}s")
+            transfer_rate = blob_size / total_time if total_time > 0 else 0
 
-            if blob_size:
-                avg_speed = blob_size / total_time if total_time > 0 else 0
-                cprint(f"Average speed: {avg_speed/1024/1024:.2f} MB/s")
-
-    cprint(f"Successfully streamed file to {remote_file_path}")
+            cprint(
+                f"Stream transfer completed",
+                severity="INFO",
+                time=f"{total_time:.2f}s",
+                rate=f"{transfer_rate/(1024*1024):.2f} MB/s",
+                size=f"{blob_size/(1024*1024)::.2f} MB",
+            )
 
 
 def _download_and_upload(sftp: paramiko.SFTPClient, blob: storage.Blob, remote_file_path: str) -> None:
@@ -204,37 +239,48 @@ def _download_and_upload(sftp: paramiko.SFTPClient, blob: storage.Blob, remote_f
         The temporary file is automatically cleaned up after the upload
         completes or if an error occurs.
     """
-    # Step 1: Download to temporary file
+    overall_start = time.time()
     temp_file = tempfile.NamedTemporaryFile(delete=False)
     temp_path = temp_file.name
     temp_file.close()  # Close but don't delete
 
     try:
-        cprint(f"Downloading from GCS to temporary file: {temp_path}")
+        # Step 1: Download
+        cprint(f"Starting download from GCS", severity="INFO")
         download_start = time.time()
         blob.download_to_filename(temp_path)
         download_time = time.time() - download_start
         file_size = os.path.getsize(temp_path)
 
+        download_rate = file_size / download_time / 1024 / 1024 if download_time > 0 else 0
         cprint(
-            f"Downloaded {file_size/1024/1024:,.2f} MB in {download_time:.1f}s "
-            f"({file_size/download_time/1024/1024:.2f} MB/s)"
+            f"GCS download completed",
+            severity="INFO",
+            size=f"{file_size/1024/1024:.2f} MB",
+            time=f"{download_time:.2f}s",
+            rate=f"{download_rate:.2f} MB/s",
         )
 
-        # Step 2: Direct upload using put (no chunking)
-        cprint(f"Directly uploading file to SFTP: {remote_file_path}")
+        # Step 2: SFTP upload
+        cprint(f"Starting SFTP upload", severity="INFO", destination=remote_file_path)
         upload_start = time.time()
-
-        # Use direct put method
         sftp.put(temp_path, remote_file_path)
-
-        # Report results
         upload_time = time.time() - upload_start
-        total_time = download_time + upload_time
-        avg_speed = file_size / upload_time if upload_time > 0 else 0
 
-        cprint(f"Upload completed in {upload_time:.1f}s ({avg_speed/1024/1024:.2f} MB/s)")
-        cprint(f"Total transfer time: {total_time:.1f}s (download + upload)")
+        # Calculate metrics
+        upload_rate = file_size / upload_time / 1024 / 1024 if upload_time > 0 else 0
+        total_time = time.time() - overall_start
+
+        # Log completion with detailed metrics
+        cprint(
+            f"SFTP upload completed",
+            severity="INFO",
+            upload_time=f"{upload_time:.2f}s",
+            upload_rate=f"{upload_rate:.2f} MB/s",
+            download_time=f"{download_time:.2f}s",
+            download_rate=f"{download_rate:.2f} MB/s",
+            total_time=f"{total_time:.2f}s",
+        )
 
     finally:
         # Clean up temp file
@@ -263,34 +309,42 @@ def check_sftp_credentials(sftp_config: Dict[str, Any], timeout: int = 10) -> bo
     password = sftp_config["password"]
     remote_path = sftp_config.get("directory", sftp_config.get("path", "/"))
 
+    start_time = time.time()
+    cprint(
+        f"Verifying SFTP credentials", severity="INFO", host=host, port=port, username=username, directory=remote_path
+    )
+
     # Create a "transport" directly (lower level than SSHClient)
     try:
-        cprint(f"Testing SFTP connection to {host}:{port} as {username}")
-
         # Create transport
         transport = paramiko.Transport((host, port))
-        transport.connect(username=username, password=password)
+        transport.connect(username=username, password=sftp_config["password"])
 
         # Create SFTP client from transport
         sftp = paramiko.SFTPClient.from_transport(transport)
 
         # Try listing directory
         try:
-            sftp.listdir(remote_path)
-            cprint(f"Successfully listed directory {remote_path}")
+            cprint(f"Checking directory access")
+            files = sftp.listdir(remote_path)
+            cprint(f"Directory access confirmed", file_count=len(files), directory=remote_path)
         except FileNotFoundError:
-            cprint(f"Directory {remote_path} does not exist", severity="WARNING")
+            cprint(
+                f"Directory does not exist, will be created during upload", severity="WARNING", directory=remote_path
+            )
 
         # Clean up
         sftp.close()
         transport.close()
 
-        cprint(f"SFTP credentials valid, successfully connected to {host}:{port}")
+        elapsed = time.time() - start_time
+        cprint(f"SFTP credentials verified in {elapsed:.2f}s", severity="INFO")
         return True
 
     except Exception as e:
-        error_message = f"SFTP credential check failed: {str(e)}"
-        cprint(error_message, severity="ERROR")
+        elapsed = time.time() - start_time
+        error_message = f"SFTP connection failed after {elapsed:.2f}s: {str(e)}"
+        cprint(error_message, severity="ERROR", host=host, port=port, username=username)
         raise ConfigError(error_message)
 
 
