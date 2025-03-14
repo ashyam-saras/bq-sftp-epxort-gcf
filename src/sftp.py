@@ -317,7 +317,7 @@ if __name__ == "__main__":
     # Create 'check' command parser
     check_parser = subparsers.add_parser("check", help="Check SFTP connection")
     add_sftp_args(check_parser)
-    check_parser.add_argument("--timeout", type=int, default=10, help="Connection timeout in seconds")
+    check_parser.add_argument("--timeout", type=int, default=3000, help="Connection timeout in seconds")
 
     # Create 'upload' command parser
     upload_parser = subparsers.add_parser("upload", help="Upload file from GCS to SFTP")
