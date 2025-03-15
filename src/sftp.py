@@ -4,7 +4,6 @@ Handles connecting to SFTP and uploading files.
 """
 
 import os
-import shutil
 import tempfile
 import time
 from pathlib import PurePosixPath
@@ -46,7 +45,7 @@ def parse_gcs_uri(gcs_uri: str) -> Tuple[str, str]:
 
 def upload_from_gcs(sftp_config: Dict[str, Any], gcs_uri: str, remote_filename: str) -> None:
     """
-    Upload a file from GCS to SFTP server using the specified method.
+    Upload a file from GCS to SFTP server using download-upload method.
 
     Args:
         sftp_config: Dictionary with SFTP connection parameters
@@ -60,10 +59,6 @@ def upload_from_gcs(sftp_config: Dict[str, Any], gcs_uri: str, remote_filename: 
     password = sftp_config["password"]
     directory = sftp_config["directory"]
 
-    # Extract method preference (only two options now: "download" or "stream")
-    upload_method = sftp_config.get("upload_method", "download")  # download or stream
-    size_threshold = sftp_config.get("size_threshold", 1073741824)  # 1GB default
-
     # Use PurePosixPath for SFTP paths (always Unix-style)
     remote_path = PurePosixPath(directory)
     remote_file_path = remote_path / remote_filename
@@ -73,7 +68,6 @@ def upload_from_gcs(sftp_config: Dict[str, Any], gcs_uri: str, remote_filename: 
         severity="INFO",
         source=gcs_uri,
         destination=f"{host}:{remote_file_path}",
-        method=upload_method,
     )
 
     # Get GCS blob
@@ -100,24 +94,10 @@ def upload_from_gcs(sftp_config: Dict[str, Any], gcs_uri: str, remote_filename: 
         # Create directories if needed
         ensure_sftp_directory(sftp, remote_path)
 
-        # Choose method based on settings or file size
-        method = upload_method
-        if upload_method == "auto":
-            method = "stream" if blob_size >= size_threshold else "download"
-            cprint(
-                f"Auto-selected '{method}' method based on file size",
-                file_size=f"{blob_size/(1024*1024):.2f} MB",
-                threshold=f"{size_threshold/(1024*1024):.2f} MB",
-            )
-
-        # Use the selected method
+        # Use download-upload method
+        cprint("Using download-upload method", severity="INFO")
         transfer_start = time.time()
-        if method == "stream":
-            cprint("Using direct streaming method", severity="INFO")
-            _stream_direct(sftp, blob, str(remote_file_path))
-        else:
-            cprint("Using download-upload method", severity="INFO")
-            _download_and_upload(sftp, blob, str(remote_file_path))
+        _download_and_upload(sftp, blob, str(remote_file_path))
 
         # Calculate total transfer time
         transfer_time = time.time() - transfer_start
@@ -163,13 +143,15 @@ def upload_from_gcs_batch(sftp_config: Dict[str, Any], file_mappings: List[Tuple
     port = int(sftp_config.get("port", 22))
     username = sftp_config["username"]
     directory = sftp_config["directory"]
-    upload_method = sftp_config.get("upload_method", "download")
 
     start_time = time.time()
     files_transferred = 0
 
     cprint(
-        f"Starting batch upload of {len(file_mappings)} files to SFTP", severity="INFO", host=host, directory=directory
+        f"Starting batch upload of {len(file_mappings)} files to SFTP",
+        severity="INFO",
+        host=host,
+        directory=directory,
     )
 
     try:
@@ -199,11 +181,8 @@ def upload_from_gcs_batch(sftp_config: Dict[str, Any], file_mappings: List[Tuple
                 # Build full remote path
                 remote_path = PurePosixPath(directory) / remote_filename
 
-                # Use the selected upload method
-                if upload_method == "stream":
-                    _stream_direct(sftp, blob, str(remote_path))
-                else:
-                    _download_and_upload(sftp, blob, str(remote_path))
+                # Use download-upload method
+                _download_and_upload(sftp, blob, str(remote_path))
 
                 files_transferred += 1
                 file_time = time.time() - file_start
@@ -265,50 +244,6 @@ def ensure_sftp_directory(sftp: paramiko.SFTPClient, remote_path: PurePosixPath)
             except FileNotFoundError:
                 cprint(f"Creating directory: {current}")
                 sftp.mkdir(str(current))
-
-
-def _stream_direct(sftp: paramiko.SFTPClient, blob: storage.Blob, remote_file_path: str) -> None:
-    """
-    Stream directly from GCS to SFTP without chunking.
-
-    This method opens a direct pipe between GCS and SFTP, streaming the file
-    contents without storing the complete file in memory or on disk. It uses
-    shutil.copyfileobj with a large buffer for efficient transfer.
-
-    Args:
-        sftp: Paramiko SFTP client connected to the server
-        blob: Google Cloud Storage blob object to download
-        remote_file_path: Destination path on the SFTP server
-
-    Returns:
-        None
-    """
-    blob_size = blob.size
-    start_time = time.time()
-
-    cprint(
-        f"Starting direct stream transfer",
-        severity="INFO",
-        file_size=f"{blob_size/(1024*1024):.2f} MB",
-        destination=remote_file_path,
-    )
-
-    with blob.open("rb") as source_file:
-        with sftp.file(remote_file_path, "wb") as sftp_file:
-            # Let the libraries handle the data transfer
-            shutil.copyfileobj(source_file, sftp_file)
-
-            # Report completion metrics
-            total_time = time.time() - start_time
-            transfer_rate = blob_size / total_time if total_time > 0 else 0
-
-            cprint(
-                f"Stream transfer completed",
-                severity="INFO",
-                time=f"{total_time:.2f}s",
-                rate=f"{transfer_rate/(1024*1024):.2f} MB/s",
-                size=f"{blob_size/(1024*1024)::.2f} MB",
-            )
 
 
 def _download_and_upload(sftp: paramiko.SFTPClient, blob: storage.Blob, remote_file_path: str) -> None:
@@ -471,18 +406,6 @@ if __name__ == "__main__":
     add_sftp_args(upload_parser)
     upload_parser.add_argument("--gcs-uri", required=True, help="GCS URI of file to upload (gs://bucket/path)")
     upload_parser.add_argument("--remote-file", required=True, help="Filename to use on SFTP server")
-    upload_parser.add_argument(
-        "--method",
-        choices=["download", "stream", "auto"],
-        default="download",
-        help="Transfer method: download (default, fastest), stream (for very large files), or auto (size-based)",
-    )
-    upload_parser.add_argument(
-        "--size-threshold",
-        type=int,
-        default=1073741824,  # 1GB
-        help="Size threshold for auto method in bytes (default: 1GB)",
-    )
 
     args = parser.parse_args()
 
@@ -513,10 +436,6 @@ if __name__ == "__main__":
     elif args.command == "upload":
         # Upload file from GCS to SFTP
         try:
-            # Configure parameters
-            sftp_config["upload_method"] = args.method
-            sftp_config["size_threshold"] = args.size_threshold
-
             print(f"Uploading {args.gcs_uri} to SFTP at {host}:{port}{directory}/{args.remote_file}")
             upload_from_gcs(sftp_config, args.gcs_uri, args.remote_file)
             print("✅ Upload successful!")
