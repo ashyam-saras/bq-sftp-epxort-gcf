@@ -16,56 +16,59 @@
         "processed_hashes_table": "insightsprod.boxoutllc_sftp_metadata.export_processed_hashes"
     },
     "exports": {
-        "account_overview_sales": {
-            "source_table": "insightsprod.boxoutllc_4517_prod_presentation.account_overview_sales",
-            "compress": true,
-            "export_type": "incremental",
-            "hash_columns": [
-                "customer_id",
-                "order_id",
-                "order_tags",
-                "date",
-                "transaction_type",
-                "acquisition_date",
-                "acquisition_month",
-                "new_or_existing",
-                "last_order_date",
-                "order_type_by_business",
-                "order_type_by_subscription",
-                "order_month",
-                "brand_name",
-                "platform_name",
-                "store_name",
-                "parent_asin",
-                "product_id",
-                "product_name",
-                "product_name_actual",
-                "product_category",
-                "sku",
-                "currency_code",
-                "city",
-                "district",
-                "state",
-                "country",
-                "postal_code",
-                "revenue",
-                "item_discount",
-                "quantity",
-                "refunded_amount_by_order_date",
-                "refunded_quantity_by_order_date",
-                "refunded_amount_by_return_date",
-                "refunded_quantity_by_return_date"
-            ]
-        },
         "amazon_account_overview_sales_marketing_profit": {
             "source_table": "insightsprod.boxoutllc_4517_prod_presentation.amazon_account_overview_sales_marketing_profit",
             "compress": true,
-            "export_type": "full"
+            "export_type": "full",
+            "date_column": "date",
+            "days_lookback": 30
         },
-        "account_overview_sales_last30days": {
+        "account_overview_sales": {
             "source_table": "insightsprod.boxoutllc_4517_prod_presentation.account_overview_sales",
             "compress": true,
-            "export_type": "date_range",
+            "export_type": "full",
+            "date_column": "date",
+            "days_lookback": 30
+        },
+        "AmazonAds_Advertising": {
+            "source_table": "insightsprod.boxoutllc_4517_prod_presentation.AmazonAds_Advertising_pbi",
+            "compress": true,
+            "export_type": "full",
+            "date_column": "date",
+            "days_lookback": 30
+        },
+        "AmazonAds_Targeting": {
+            "source_table": "insightsprod.boxoutllc_4517_prod_presentation.AmazonAds_Targeting_pbi",
+            "compress": true,
+            "export_type": "full",
+            "date_column": "date",
+            "days_lookback": 30
+        },
+        "Inventory_Amazon": {
+            "source_table": "insightsprod.boxoutllc_4517_prod_presentation.Inventory_Amazon_PBI",
+            "compress": true,
+            "export_type": "full",
+            "date_column": "date",
+            "days_lookback": 30
+        },
+        "PnL_Amazon": {
+            "source_table": "insightsprod.boxoutllc_4517_prod_presentation.PnL_Amazon_PBI",
+            "compress": true,
+            "export_type": "full",
+            "date_column": "date",
+            "days_lookback": 30
+        },
+        "Product": {
+            "source_table": "insightsprod.boxoutllc_4517_prod_presentation.Product_PBI",
+            "compress": true,
+            "export_type": "full",
+            "date_column": "date",
+            "days_lookback": 30
+        },
+        "traffic_analysis": {
+            "source_table": "insightsprod.boxoutllc_4517_prod_presentation.traffic_analysis",
+            "compress": true,
+            "export_type": "full",
             "date_column": "date",
             "days_lookback": 30
         }
