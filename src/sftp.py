@@ -3,6 +3,7 @@ SFTP operations for the export function.
 Handles connecting to SFTP and uploading files.
 """
 
+import concurrent.futures
 import os
 import tempfile
 import time
@@ -213,6 +214,105 @@ def upload_from_gcs_batch(sftp_config: Dict[str, Any], file_mappings: List[Tuple
         error_message = f"SFTP batch upload failed after {total_time:.2f}s: {str(e)}"
         cprint(error_message, severity="ERROR")
         raise ConfigError(error_message)
+
+
+def upload_from_gcs_batch_parallel(
+    sftp_config: Dict[str, Any],
+    file_mappings: List[Tuple[str, str]],
+    max_workers: int = None,
+) -> int:
+    """
+    Upload multiple files from GCS to SFTP server in parallel using a simplified approach.
+    Each worker thread creates its own SFTP connection.
+
+    Args:
+        sftp_config: SFTP connection configuration
+        file_mappings: List of (gcs_uri, remote_filename) tuples
+        max_workers: Maximum number of concurrent workers
+
+    Returns:
+        int: Number of files successfully transferred
+    """
+    if not file_mappings:
+        cprint("No files to transfer", severity="WARNING")
+        return 0
+
+    # Set default thread count if not specified
+    if max_workers is None:
+        max_workers = min(20, (os.cpu_count() or 1) * 4)  # Cap at reasonable limit
+
+    total_files = len(file_mappings)
+    successful = 0
+    failed = 0
+    start_time = time.time()
+
+    cprint(f"Starting parallel upload of {total_files} files with {max_workers} workers", severity="INFO")
+
+    # Create a copy of the config for each worker
+    def upload_file(args):
+        """Worker function that handles a single file transfer"""
+        idx, (gcs_uri, remote_filename) = args
+        file_start = time.time()
+
+        try:
+            # Create a deep copy of the config for each thread
+            thread_config = sftp_config.copy()
+
+            # Upload the file using existing function (creates its own connection)
+            upload_from_gcs(thread_config, gcs_uri, remote_filename)
+
+            file_time = time.time() - file_start
+            cprint(
+                f"File {idx+1}/{total_files}: {remote_filename} transferred successfully",
+                severity="INFO",
+                time_taken=f"{file_time:.2f}s",
+            )
+            return True
+
+        except Exception as e:
+            file_time = time.time() - file_start
+            cprint(
+                f"File {idx+1}/{total_files}: {remote_filename} transfer failed: {str(e)}",
+                severity="ERROR",
+                time_taken=f"{file_time:.2f}s",
+            )
+            return False
+
+    try:
+        # Process files with ThreadPoolExecutor
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # Submit all tasks and collect results
+            future_to_file = {
+                executor.submit(upload_file, (i, mapping)): (i, mapping) for i, mapping in enumerate(file_mappings)
+            }
+
+            # Process results as they complete
+            for future in concurrent.futures.as_completed(future_to_file):
+                if future.result():
+                    successful += 1
+                else:
+                    failed += 1
+
+                # Report progress
+                completed = successful + failed
+                cprint(
+                    f"Progress: {completed}/{total_files} files processed ({successful} successful, {failed} failed)",
+                    severity="DEBUG",
+                )
+
+        total_time = time.time() - start_time
+        cprint(
+            f"Parallel upload complete: {successful}/{total_files} files transferred",
+            severity="INFO",
+            failed=failed,
+            total_time=f"{total_time:.2f}s",
+        )
+
+        return successful
+
+    except Exception as e:
+        cprint(f"Parallel upload operation failed: {str(e)}", severity="ERROR")
+        raise
 
 
 def ensure_sftp_directory(sftp: paramiko.SFTPClient, remote_path: PurePosixPath) -> None:

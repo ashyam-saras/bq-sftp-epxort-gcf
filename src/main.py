@@ -16,7 +16,7 @@ from src.bigquery import construct_gcs_uri, delete_table, export_table_to_gcs
 from src.config import load_config
 from src.helpers import cprint
 from src.metadata import complete_export, fail_export, record_processed_hashes, start_export
-from src.sftp import check_sftp_credentials, upload_from_gcs, upload_from_gcs_batch
+from src.sftp import check_sftp_credentials, upload_from_gcs, upload_from_gcs_batch_parallel
 
 
 def export_to_sftp(config: Dict[str, Any], export_name: str, date: Optional[datetime.date] = None) -> Dict[str, Any]:
@@ -139,27 +139,13 @@ def export_to_sftp(config: Dict[str, Any], export_name: str, date: Optional[date
             )
 
             # Prepare the file mappings for batch upload
-            file_mappings = []
-            for blob in blobs:
-                # Extract just the filename from the blob path
-                original_filename = blob.name.split("/")[-1]
-
-                # Use the original GCS filename directly
-                file_mappings.append((f"gs://{bucket_name}/{blob.name}", original_filename))
-
-            # Show names of files being transferred (still useful for debugging)
-            if file_mappings:
-                sample_files = [f[1] for f in file_mappings[:5]]
-                sample_display = ", ".join(sample_files)
-                cprint(f"Files to transfer: {sample_display}{'...' if len(file_mappings) > 5 else ''}")
+            file_mappings = [(f"gs://{bucket_name}/{blob.name}", blob.name.split("/")[-1]) for blob in blobs]
 
             # Use the optimized batch upload function
-            files_transferred = upload_from_gcs_batch(sftp_config, file_mappings)
-
-            cprint(
-                f"SFTP upload complete: {files_transferred} files transferred",
-                severity="INFO",
-                step_time=f"{time.time() - step_start:.2f}s",
+            files_transferred = upload_from_gcs_batch_parallel(
+                sftp_config=sftp_config,
+                file_mappings=file_mappings,
+                max_workers=10,  # Adjust based on your needs
             )
 
         else:
