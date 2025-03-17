@@ -2,4 +2,6 @@ functions-framework==3.*
 google-cloud==0.34.0
 google-cloud-bigquery==3.30.0
 google-cloud-storage==3.1.0
+python-dotenv==1.0.1
 pysftp==0.2.9
+tenacity==9.0.0
