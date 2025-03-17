@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Tuple
 
 import paramiko
 from google.cloud import storage
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from src.config import ConfigError
 from src.helpers import cprint
@@ -88,9 +89,7 @@ def upload_from_gcs(sftp_config: Dict[str, Any], gcs_uri: str, remote_filename: 
 
         # Connect to SFTP
         cprint(f"Connecting to SFTP server at {host}:{port}", severity="INFO")
-        transport = paramiko.Transport((host, port))
-        transport.connect(username=username, password=password)
-        sftp = paramiko.SFTPClient.from_transport(transport)
+        transport, sftp = create_sftp_connection(host, port, username, password)
 
         # Create directories if needed
         ensure_sftp_directory(sftp, remote_path)
@@ -143,6 +142,7 @@ def upload_from_gcs_batch(sftp_config: Dict[str, Any], file_mappings: List[Tuple
     host = sftp_config["host"]
     port = int(sftp_config.get("port", 22))
     username = sftp_config["username"]
+    password = sftp_config["password"]
     directory = sftp_config["directory"]
 
     start_time = time.time()
@@ -158,9 +158,7 @@ def upload_from_gcs_batch(sftp_config: Dict[str, Any], file_mappings: List[Tuple
     try:
         # Establish connection once
         cprint(f"Connecting to SFTP server at {host}:{port}")
-        transport = paramiko.Transport((host, port))
-        transport.connect(username=username, password=sftp_config["password"])
-        sftp = paramiko.SFTPClient.from_transport(transport)
+        transport, sftp = create_sftp_connection(host, port, username, password)
 
         # Create directory if it doesn't exist
         ensure_sftp_directory(sftp, PurePosixPath(directory))
@@ -346,6 +344,16 @@ def ensure_sftp_directory(sftp: paramiko.SFTPClient, remote_path: PurePosixPath)
                 sftp.mkdir(str(current))
 
 
+@retry(
+    stop=stop_after_attempt(5),
+    wait=wait_exponential(multiplier=1, min=1, max=30),
+    retry=retry_if_exception_type((IOError, OSError, paramiko.ssh_exception.SSHException, ConnectionError)),
+    before_sleep=lambda retry_state: cprint(
+        f"Transfer attempt {retry_state.attempt_number} failed, retrying in {retry_state.next_action.sleep:.1f} seconds...",
+        severity="WARNING",
+        error=str(retry_state.outcome.exception()),
+    ),
+)
 def _download_and_upload(sftp: paramiko.SFTPClient, blob: storage.Blob, remote_file_path: str) -> None:
     """
     Two-step process: Download to temp file then upload to SFTP.
@@ -445,11 +453,7 @@ def check_sftp_credentials(sftp_config: Dict[str, Any], timeout: int = 10) -> bo
     # Create a "transport" directly (lower level than SSHClient)
     try:
         # Create transport
-        transport = paramiko.Transport((host, port))
-        transport.connect(username=username, password=sftp_config["password"])
-
-        # Create SFTP client from transport
-        sftp = paramiko.SFTPClient.from_transport(transport)
+        transport, sftp = create_sftp_connection(host, port, username, password)
 
         # Try listing directory
         try:
@@ -474,6 +478,25 @@ def check_sftp_credentials(sftp_config: Dict[str, Any], timeout: int = 10) -> bo
         error_message = f"SFTP connection failed after {elapsed:.2f}s: {str(e)}"
         cprint(error_message, severity="ERROR", host=host, port=port, username=username)
         raise ConfigError(error_message)
+
+
+@retry(
+    stop=stop_after_attempt(5),
+    wait=wait_exponential(multiplier=1, min=1, max=20),
+    retry=retry_if_exception_type((ConnectionError, paramiko.ssh_exception.SSHException)),
+    before_sleep=lambda retry_state: cprint(
+        f"Connection attempt {retry_state.attempt_number} failed, retrying in {retry_state.next_action.sleep:.1f} seconds...",
+        severity="WARNING",
+        error=str(retry_state.outcome.exception()),
+    ),
+)
+def create_sftp_connection(host: str, port: int, username: str, password: str):
+    """Create an SFTP connection with retry logic."""
+    cprint(f"Connecting to SFTP server at {host}:{port}", severity="INFO")
+    transport = paramiko.Transport((host, port))
+    transport.connect(username=username, password=password)
+    sftp = paramiko.SFTPClient.from_transport(transport)
+    return transport, sftp
 
 
 if __name__ == "__main__":
