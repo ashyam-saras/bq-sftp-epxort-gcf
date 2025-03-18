@@ -11,7 +11,7 @@
     },
     "metadata": {
         "dataset": "boxoutllc_sftp_metadata",
-        "export_metadata_table": "insightsprod.boxoutllc_sftp_metadata.export_metadata",
+        "export_metadata_table": "insightsprod.boxoutllc_sftp_metadata.export_metadata"
     },
     "exports": {
         "amazon_account_overview_sales_marketing_profit": {
