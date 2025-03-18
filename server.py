@@ -52,7 +52,7 @@ def handle_request():
                             )
 
                     # Run the export process
-                    config = load_config()
+                    config = load_config("configs/default.json")  # Add explicit path
                     cprint(f"Starting export via Pub/Sub: {export_name}", severity="INFO")
                     result = export_to_sftp(config, export_name, export_date)
                     return jsonify(result)
@@ -60,7 +60,7 @@ def handle_request():
                     return jsonify({"status": "error", "message": "Invalid JSON in Pub/Sub message"}), 400
 
         # Handle direct API invocation
-        config = load_config()
+        config = load_config("configs/default.json")  # Add explicit path
         export_name = envelope.get("export_name")
         date_str = envelope.get("date")
 
