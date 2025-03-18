@@ -216,4 +216,3 @@ Monitor the service through:
 - `SFTP_DIRECTORY`: Base directory on SFTP server
 - `GCS_BUCKET`: GCS bucket for temporary storage
 - `EXPORT_METADATA_TABLE`: BigQuery table for export metadata
-- `DEBUG`: Set to "True" for verbose logging
