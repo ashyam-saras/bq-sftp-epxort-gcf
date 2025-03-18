@@ -1,6 +1,6 @@
 """
 Metadata tracking for BigQuery to SFTP export jobs.
-Handles tracking export status and maintaining incremental export hash tables.
+Handles tracking export status.
 """
 
 import argparse
@@ -174,77 +174,6 @@ def get_export_status(export_id: str) -> Dict[str, Any]:
         return result
 
     raise Exception(f"Export {export_id} not found")
-
-
-def record_processed_hashes(export_id: str, export_name: str, temp_table_name: str) -> int:
-    """
-    Record hashes for processed rows.
-
-    Args:
-        export_id: Export ID
-        export_name: Export name
-        temp_table_name: Temporary table containing rows with hashes
-
-    Returns:
-        int: Number of hashes recorded
-    """
-    if not temp_table_name:
-        cprint("No temp table provided for hash recording", severity="WARNING")
-        return 0
-
-    now = datetime.datetime.now(datetime.timezone.utc)
-
-    # Insert hashes from temp table
-    # Note: We can't parameterize the column values in the SELECT statement,
-    # but we can use parameters in a WITH clause
-    query = f"""
-    WITH parameters AS (
-      SELECT 
-        @export_id AS export_id,
-        @export_name AS export_name,
-        @processed_at AS processed_at
-    )
-    INSERT INTO `{EXPORT_PROCESSED_HASHES_TABLE}` (export_id, export_name, row_hash, processed_at)
-    SELECT 
-      parameters.export_id, 
-      parameters.export_name,
-      temp.row_hash,
-      parameters.processed_at
-    FROM `{temp_table_name}` temp, parameters
-    """
-
-    job_config = bigquery.QueryJobConfig(
-        query_parameters=[
-            bigquery.ScalarQueryParameter("export_id", "STRING", export_id),
-            bigquery.ScalarQueryParameter("export_name", "STRING", export_name),
-            bigquery.ScalarQueryParameter("processed_at", "TIMESTAMP", now),
-        ]
-    )
-
-    cprint(f"Recording processed hashes from {temp_table_name} to {EXPORT_PROCESSED_HASHES_TABLE}", severity="INFO")
-    query_job = client.query(query, job_config=job_config)
-    query_job.result()
-
-    # Count inserted rows
-    count_query = f"""
-    SELECT COUNT(*) as count
-    FROM `{EXPORT_PROCESSED_HASHES_TABLE}`
-    WHERE export_id = @export_id
-    """
-
-    count_config = bigquery.QueryJobConfig(
-        query_parameters=[
-            bigquery.ScalarQueryParameter("export_id", "STRING", export_id),
-        ]
-    )
-
-    count_job = client.query(count_query, job_config=count_config)
-    results = count_job.result()
-
-    for row in results:
-        return row.count
-
-    return 0
 
 
 if __name__ == "__main__":

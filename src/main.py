@@ -15,7 +15,7 @@ from google.cloud import storage
 from src.bigquery import construct_gcs_uri, delete_table, export_table_to_gcs
 from src.config import load_config
 from src.helpers import cprint
-from src.metadata import complete_export, fail_export, record_processed_hashes, start_export
+from src.metadata import complete_export, fail_export, start_export
 from src.sftp import check_sftp_credentials, upload_from_gcs, upload_from_gcs_batch_parallel
 
 
@@ -59,14 +59,6 @@ def export_to_sftp(config: Dict[str, Any], export_name: str, date: Optional[date
     export_type = export_config.get("export_type", "full")
     cprint(f"Export type: {export_type}", source_table=source_table, gcs_bucket=gcs_bucket)
 
-    # Parameters for incremental exports
-    hash_columns = None
-    processed_hashes_table = None
-    if export_type == "incremental":
-        hash_columns = export_config.get("hash_columns", [])
-        processed_hashes_table = config["metadata"].get("processed_hashes_table")
-        cprint(f"Using incremental export with {len(hash_columns)} hash columns")
-
     # Parameters for date range exports
     date_column = None
     days_lookback = None
@@ -95,8 +87,6 @@ def export_to_sftp(config: Dict[str, Any], export_name: str, date: Optional[date
         destination_uri, row_count, temp_table = export_table_to_gcs(
             source_table=source_table,
             gcs_uri=gcs_uri_prefix,
-            hash_columns=hash_columns,
-            processed_hashes_table=processed_hashes_table,
             date_column=date_column,
             days_lookback=days_lookback,
             compression=export_config.get("compress", True),
@@ -169,12 +159,6 @@ def export_to_sftp(config: Dict[str, Any], export_name: str, date: Optional[date
             severity="INFO",
             step_time=f"{time.time() - step_start:.2f}s",
         )
-
-        # 5. For incremental exports, record processed hashes
-        if export_type == "incremental" and temp_table:
-            cprint("Recording processed hashes", severity="INFO")
-            hashes_recorded = record_processed_hashes(export_id, export_name, temp_table)
-            cprint(f"Recorded {hashes_recorded} new hash records", severity="INFO")
 
         # 6. Record export completion
         complete_export(export_id, row_count)

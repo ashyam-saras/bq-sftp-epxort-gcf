@@ -6,6 +6,8 @@ import json
 import os
 from typing import Any, Dict, Optional
 
+from src.helpers import cprint
+
 
 class ConfigError(Exception):
     """Exception raised for configuration errors."""
@@ -53,22 +55,9 @@ def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
                     "upload_method": os.environ.get("SFTP_UPLOAD_METHOD", "download"),
                 },
                 "gcs": {"bucket": os.environ.get("GCS_BUCKET")},
-                "metadata": {
-                    "dataset": os.environ.get("METADATA_DATASET", "metadata"),
-                    "processed_hashes_table": os.environ.get("PROCESSED_HASHES_TABLE"),
-                },
+                "metadata": {"export_metadata_table": os.environ.get("EXPORT_METADATA_TABLE", "")},
                 "exports": {},
             }
-
-            # Look for export definitions in environment variables
-            for key in os.environ:
-                if key.startswith("EXPORT_"):
-                    export_name = key[7:].lower()
-                    try:
-                        export_config = json.loads(os.environ[key])
-                        config["exports"][export_name] = export_config
-                    except json.JSONDecodeError:
-                        raise ConfigError(f"Invalid JSON in {key} environment variable")
 
     # Validate config
     _validate_config(config)
@@ -76,54 +65,40 @@ def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
 
 
 def _validate_config(config: Dict[str, Any]) -> None:
-    """
-    Validate configuration.
-
-    Args:
-        config: Configuration dictionary
-
-    Raises:
-        ConfigError: If configuration is invalid
-    """
-    # Check required sections
-    required_sections = ["sftp", "gcs", "exports"]
-    for section in required_sections:
-        if section not in config:
-            raise ConfigError(f"Missing required section in config: {section}")
-
-    # Check SFTP config
-    sftp_required = ["host", "username", "password", "directory"]
-    for field in sftp_required:
-        if not config["sftp"].get(field):
-            raise ConfigError(f"Missing required SFTP config: {field}")
-
-    # Check GCS config
-    if not config["gcs"].get("bucket"):
-        raise ConfigError("Missing GCS bucket name")
-
-    # Check exports
-    if not config["exports"]:
-        raise ConfigError("No exports defined in configuration")
+    """Validate configuration and set defaults."""
+    if "exports" not in config or not isinstance(config["exports"], dict):
+        raise ConfigError("Missing or invalid exports section in config")
 
     for name, export in config["exports"].items():
         # Validate required fields
-        if not export.get("source_table"):
-            raise ConfigError(f"Missing source_table in export: {name}")
+        if "source_table" not in export:
+            raise ConfigError(f"Missing source_table in export config: {name}")
 
-        # Validate export type
-        export_type = export.get("export_type", "full")
-        if export_type not in ["full", "incremental", "date_range"]:
-            raise ConfigError(f"Invalid export_type '{export_type}' in export: {name}")
+        # Set defaults for optional fields
+        export["export_type"] = export.get("export_type", "full")
 
-        if export_type == "incremental":
-            if not export.get("hash_columns") or not isinstance(export.get("hash_columns"), list):
-                raise ConfigError(f"Missing or invalid hash_columns for incremental export: {name}")
+        # Validate date range export configuration
+        if export.get("date_column") and "days_lookback" not in export:
+            export["days_lookback"] = 7
+            cprint(f"Export '{name}' has date_column but no days_lookback, using default: 7 days", severity="INFO")
 
-            if "metadata" not in config or "processed_hashes_table" not in config["metadata"]:
-                raise ConfigError(f"Missing processed_hashes_table in metadata config for incremental export: {name}")
+    # SFTP configuration
+    if "sftp" not in config:
+        # Set default SFTP config from environment variables
+        config["sftp"] = {
+            "host": os.environ.get("SFTP_HOST", ""),
+            "port": int(os.environ.get("SFTP_PORT", 22)),
+            "username": os.environ.get("SFTP_USERNAME", ""),
+            "password": os.environ.get("SFTP_PASSWORD", ""),
+            "directory": os.environ.get("SFTP_DIRECTORY", "/"),
+        }
 
-        if export_type == "date_range":
-            if not export.get("date_column"):
-                raise ConfigError(f"Missing date_column for date_range export: {name}")
-            if not export.get("days_lookback"):
-                raise ConfigError(f"Missing days_lookback for date_range export: {name}")
+    # GCS configuration
+    if "gcs" not in config:
+        # Set default GCS config from environment variables
+        config["gcs"] = {"bucket": os.environ.get("GCS_BUCKET", "")}
+
+    # Keep just the export_metadata_table part
+    if "metadata" not in config:
+        # Set default metadata config from environment variables
+        config["metadata"] = {"export_metadata_table": os.environ.get("EXPORT_METADATA_TABLE", "")}

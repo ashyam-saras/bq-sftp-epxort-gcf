@@ -1,14 +1,13 @@
 """
 BigQuery operations for exporting data to GCS.
-Handles query building, hash-based incremental exports,
-and managing the export jobs.
+Handles query building and managing the export jobs.
 """
 
 import argparse
 import datetime
 import time
 import uuid
-from typing import List, Optional, Tuple
+from typing import Optional, Tuple
 
 from google.cloud import bigquery
 
@@ -38,19 +37,14 @@ def construct_gcs_uri(bucket: str, export_name: str, date: datetime.date) -> str
 
 def build_export_query(
     source_table: str,
-    hash_columns: Optional[List[str]] = None,
-    processed_hashes_table: Optional[str] = None,
     date_column: Optional[str] = None,
     days_lookback: Optional[int] = None,
 ) -> str:
     """
-    Builds SQL query for data export, handling incremental exports with hash-based filtering
-    or date-range based filtering.
+    Builds SQL query for data export, handling incremental exports with date-range based filtering.
 
     Args:
         source_table: Fully qualified source table (project.dataset.table)
-        hash_columns: List of column names to use for row hashing (for incremental)
-        processed_hashes_table: Table containing already processed hashes
         date_column: Column name to use for date filtering (for date range exports)
         days_lookback: Number of days to look back for date range exports
 
@@ -66,23 +60,6 @@ def build_export_query(
         cprint(f"Building date range query with lookback of {days_lookback} days on column {date_column}")
         return query
 
-    # Option 2: Hash-based incremental export
-    if hash_columns and processed_hashes_table:
-        # Build the hash expression from specified columns
-        hash_columns_concat = ", ' | ', ".join([f"CAST({col} AS STRING)" for col in hash_columns])
-        hash_expression = f"TO_HEX(MD5(CONCAT({hash_columns_concat})))"
-
-        # Build incremental query that filters out already processed hashes
-        query = f"""
-        SELECT t.*, {hash_expression} AS row_hash 
-        FROM `{source_table}` t
-        WHERE {hash_expression} NOT IN (
-          SELECT row_hash FROM `{processed_hashes_table}`
-        )
-        """
-        cprint(f"Building incremental hash-based query with {len(hash_columns)} columns")
-        return query
-
     # Option 3: Full export - select all data
     cprint(f"Building full export query for {source_table}")
     return f"SELECT * FROM `{source_table}`"
@@ -91,8 +68,6 @@ def build_export_query(
 def export_table_to_gcs(
     source_table: str,
     gcs_uri: str,
-    hash_columns: Optional[List[str]] = None,
-    processed_hashes_table: Optional[str] = None,
     date_column: Optional[str] = None,
     days_lookback: Optional[int] = None,
     compression: bool = True,
@@ -103,8 +78,6 @@ def export_table_to_gcs(
     Args:
         source_table: Fully qualified source table (project.dataset.table)
         gcs_uri: GCS URI prefix to write files
-        hash_columns: List of column names to use for row hashing (for incremental)
-        processed_hashes_table: Table containing already processed hashes
         date_column: Column name to use for date filtering
         days_lookback: Number of days to look back
         compression: Whether to compress the output files (GZIP)
@@ -116,21 +89,8 @@ def export_table_to_gcs(
     temp_table_name = ""
     cprint(f"Starting export process for {source_table}", severity="INFO")
 
-    # For hash-based incremental exports, create a temporary table
-    if hash_columns and processed_hashes_table:
-        temp_table_name = f"temp_export_{uuid.uuid4().hex[:8]}"
-        temp_table_id = f"{source_table.split('.')[0]}.{source_table.split('.')[1]}.{temp_table_name}"
-
-        query = build_export_query(
-            source_table=source_table,
-            hash_columns=hash_columns,
-            processed_hashes_table=processed_hashes_table,
-        )
-        source_to_extract = temp_table_id
-        cprint(f"Using incremental export with temp table {temp_table_id}")
-
     # For date range exports, create a temporary table
-    elif date_column and days_lookback is not None:
+    if date_column and days_lookback is not None:
         temp_table_name = f"temp_export_date_{uuid.uuid4().hex[:8]}"
         temp_table_id = f"{source_table.split('.')[0]}.{source_table.split('.')[1]}.{temp_table_name}"
 
@@ -252,8 +212,6 @@ if __name__ == "__main__":
     parser.add_argument("--source", required=True, help="Source table (project.dataset.table)")
     parser.add_argument("--bucket", required=True, help="GCS bucket name without gs:// prefix")
     parser.add_argument("--export-name", required=True, help="Export name for file organization")
-    parser.add_argument("--hash-columns", help="Comma-separated list of columns for hashing")
-    parser.add_argument("--processed-hashes-table", help="Table with already processed hashes")
     parser.add_argument("--date-column", help="Column name to use for date filtering")
     parser.add_argument("--days-lookback", type=int, help="Number of days to look back for date filtering")
     parser.add_argument("--no-compression", action="store_true", help="Disable GZIP compression")
@@ -281,8 +239,6 @@ if __name__ == "__main__":
     destination_uri, row_count, temp_table = export_table_to_gcs(
         source_table=args.source,
         gcs_uri=gcs_uri,
-        hash_columns=hash_columns,
-        processed_hashes_table=args.processed_hashes_table,
         date_column=args.date_column,
         days_lookback=args.days_lookback,
         compression=compression,
