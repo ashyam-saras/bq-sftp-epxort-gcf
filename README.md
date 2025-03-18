@@ -1,203 +1,219 @@
-# BigQuery to SFTP Export Cloud Function
+# BigQuery to SFTP Export Service
 
-This Cloud Function extracts data from BigQuery tables and uploads it to an SFTP server. It supports both incremental and full exports, with configurable table mappings and scheduling.
+This service extracts data from BigQuery tables and uploads it to an SFTP server. It runs as a Cloud Run service, with support for both incremental and full exports, and can be triggered via HTTP requests or Pub/Sub messages.
 
 ## Features
 
-- **Configurable Table Exports**: Define tables to export using a configuration file
-- **Incremental Exports**: Export only new/changed records since the last export
-- **Full Table Exports**: Option to export entire tables regardless of last export date
-- **Export Tracking**: Metadata table to track export history and prevent duplicate exports
-- **Notifications**: Automated email and Slack notifications upon completion or failure
-- **Secure Credentials**: Environment variables for sensitive information
-- **Scheduling**: Cloud Scheduler integration for periodic execution
+- **Cloud Run Service**: Runs as a scalable, containerized service
+- **Pub/Sub Integration**: Can be triggered via Pub/Sub messages for asynchronous processing
+- **Cloud Scheduler**: Automated scheduling with Google Cloud Scheduler
+- **Configurable Table Exports**: Define tables to export using a JSON configuration file
+- **Date Range Exports**: Export data from a specific date range
+- **Full Table Exports**: Export entire tables regardless of date
+- **SFTP Export**: Secure upload to SFTP servers with multiple file handling
+- **Parallel Transfer**: Multi-threaded uploads for improved performance
+- **Export Tracking**: Metadata table for tracking export history and status
+- **Structured Logging**: JSON-formatted logs for better observability
 
 ## Configuration
 
-The function uses a JSON configuration file to define export settings:
+The service uses a JSON configuration file to define export settings:
 
 ```json
 {
-  "exports": [
-    {
-      "name": "shopify_customers",
-      "source_table": "prod_staging.shopify_customerdata",
-      "destination_filename": "SHOPIFYCUSTOMERDATA_{datetime}.csv",
-      "timestamp_column": "last_updated_at",
-      "incremental": true,
-      "columns": ["id", "address_key", "name_key", "phone_key", "email_key", "source_type", "customer_id", "address_type", "addr_line_1", "addr_line_2", "city", "state", "country", "postal_code", "first_name", "last_name", "phone", "email", "last_updated_at", "created_at", "batch_runtime", "_run_id"]
+    "sftp": {
+        "host": "sftp.example.com",
+        "port": 22,
+        "username": "user",
+        "password": "password",
+        "directory": "/uploads"
     },
-    {
-      "name": "klaviyo_customers",
-      "source_table": "prod_staging.klaviyo_customerdata",
-      "destination_filename": "KLAVIYOCUSTOMERDATA_{datetime}.csv",
-      "timestamp_column": "last_updated_at",
-      "incremental": true,
-      "columns": ["id", "address_key", "name_key", "phone_key", "email_key", "source_type", "customer_id", "address_type", "addr_line_1", "addr_line_2", "city", "state", "country", "postal_code", "first_name", "last_name", "phone", "email", "last_updated_at", "created_at", "batch_runtime", "_run_id"]
+    "gcs": {
+        "bucket": "my-export-bucket"
+    },
+    "metadata": {
+        "export_metadata_table": "project.dataset.export_metadata"
+    },
+    "exports": {
+        "product_data": {
+            "source_table": "project.dataset.products",
+            "compress": true,
+            "export_type": "date_range",
+            "date_column": "modified_date",
+            "days_lookback": 30
+        },
+        "customer_data": {
+            "source_table": "project.dataset.customers",
+            "compress": true,
+            "export_type": "full"
+        }
     }
-  ],
-  "sftp": {
-    "path": "/To_Verite",
-    "port": 22
-  },
-  "metadata_table": "project.dataset.export_metadata"
 }
 ```
 
 ## Project Structure
 
-The project follows a modular structure to ensure maintainability and testability:
-
 ```
-bq-sftp-export-gcf/
+bq-sftp-export/
 ├── .github/
 │   └── workflows/
-│       ├── deploy.yml          # CI/CD workflow for deployment
-│       └── test.yml            # CI/CD workflow for testing
+│       └── deploy-cloud-run.yml    # CI/CD workflow for deployment
+├── configs/
+│   └── default.json                # Default export configuration
+├── scripts/
+│   ├── failed_transfers.py         # Utility to detect failed transfers
+│   ├── retry_transfers.py          # Utility to retry failed transfers
+│   ├── setup_cloudrun.sh           # Script to deploy to Cloud Run
+│   ├── setup_pubsub.sh             # Script to set up Pub/Sub integration
+│   └── setup_schedulers.sh         # Script to set up Cloud Scheduler jobs
 ├── src/
 │   ├── __init__.py
-│   ├── main.py                 # Cloud Function entry point
-│   ├── bigquery.py             # BigQuery operations
-│   ├── sftp.py                 # SFTP operations
-│   ├── metadata.py             # Metadata tracking
-│   ├── notification.py         # Email/Slack notifications
-│   └── config.py               # Configuration handling
+│   ├── bigquery.py                 # BigQuery operations
+│   ├── config.py                   # Configuration handling
+│   ├── helpers.py                  # Helper functions
+│   ├── main.py                     # Main service logic
+│   ├── metadata.py                 # Export metadata tracking
+│   └── sftp.py                     # SFTP operations
 ├── tests/
 │   ├── __init__.py
 │   ├── test_bigquery.py
-│   ├── test_sftp.py
+│   ├── test_config.py
+│   ├── test_helpers.py
+│   ├── test_main.py
 │   ├── test_metadata.py
-│   └── test_main.py
-├── configs/
-│   └── default.json            # Default export configuration
-├── deploy/
-│   ├── deploy.sh               # Deployment script
-│   └── setup_scheduler.sh      # Setup Cloud Scheduler jobs
+│   └── test_sftp.py
 ├── .gitignore
-├── requirements.txt            # Production dependencies
-├── requirements-dev.txt        # Development dependencies
-└── README.md
-```
-
-### Key Components
-
-- **main.py**: Entry point for the Cloud Function that orchestrates the export process
-- **bigquery.py**: Handles BigQuery connections, query execution, and data extraction
-- **sftp.py**: Manages SFTP connections and file uploads
-- **metadata.py**: Tracks export history and manages the metadata table
-- **notification.py**: Sends email and Slack notifications
-- **config.py**: Processes and validates export configurations
-
-### Development Workflow
-
-1. Define export configurations in `configs/default.json`
-2. Run tests locally using pytest
-3. Deploy using the deployment scripts or GitHub Actions
-4. Monitor exports through the metadata table
-
-### Design Principles
-
-- **Modularity**: Each module has a single responsibility
-- **Configurability**: Export settings defined externally
-- **Security**: Credentials managed through environment variables
-- **Testability**: Components designed for unit testing
-- **Error Handling**: Comprehensive error handling with notifications
-
-## Metadata Table
-
-The function uses a BigQuery table to track export history and manage incremental exports:
-
-### Table Structure
-
-```sql
-CREATE TABLE IF NOT EXISTS `project.dataset.export_metadata` (
-  export_name STRING NOT NULL,
-  source_table STRING NOT NULL,
-  last_export_timestamp TIMESTAMP,
-  last_exported_value STRING,
-  rows_exported INT64,
-  file_name STRING,
-  export_status STRING,
-  started_at TIMESTAMP,
-  completed_at TIMESTAMP,
-  error_message STRING
-);
-```
-
-### Purpose
-The metadata table serves several key functions:
-- Tracks the last successful export timestamp for each export job
-- Stores the last exported value for incremental exports
-- Records statistics about each export (row count, file names)
-- Maintains error information for failed exports
-- Prevents duplicate exports and data loss
-
-For incremental exports, the function queries this table to determine the timestamp cutoff point. After a successful export, it updates the table with the new timestamp and export details.
-
-You can also query this table directly to monitor export history and troubleshoot any issues.
-
-## Environment Variables
-
-- `SFTP_HOST`: SFTP server hostname
-- `SFTP_USERNAME`: SFTP username
-- `SFTP_PASSWORD`: SFTP password
-- `EMAIL_PASSWORD`: Password for sending email notifications
-- `GOOGLE_APPLICATION_CREDENTIALS`: Path to service account key (for local testing)
-
-## Development
-
-### Local Testing
-
-To test the function locally:
-
-```bash
-# Set environment variables
-export SFTP_HOST=your-sftp-host
-export SFTP_USERNAME=your-username
-export SFTP_PASSWORD=your-password
-export EMAIL_PASSWORD=your-email-password
-export GOOGLE_APPLICATION_CREDENTIALS=path/to/your/service-account-key.json
-
-# Run the function locally
-functions-framework-python --target=export_to_sftp --debug
-```
-
-### Unit Testing
-
-```bash
-python -m pytest
+├── Dockerfile                      # Container definition
+├── README.md
+├── requirements.txt                # Production dependencies
+├── requirements-dev.txt            # Development dependencies
+└── server.py                       # HTTP server for Cloud Run
 ```
 
 ## Deployment
 
-### Manual Deployment
+### Local Development
 
 ```bash
-gcloud functions deploy export_to_sftp \
-  --runtime python312 \
-  --trigger-topic export-to-sftp-trigger \
-  --entry-point export_to_sftp \
-  --service-account your-service-account@your-project.iam.gserviceaccount.com \
-  --set-env-vars SFTP_HOST=your-sftp-host,SFTP_USERNAME=your-username
+# Set up virtual environment
+python -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+pip install -r requirements-dev.txt
+
+# Set required environment variables
+export GOOGLE_APPLICATION_CREDENTIALS="path/to/service-account-key.json"
+export EXPORT_METADATA_TABLE="project.dataset.export_metadata"
+export GCS_BUCKET="my-export-bucket"
+export SFTP_HOST="sftp.example.com"
+export SFTP_USERNAME="username"
+export SFTP_PASSWORD="password"
+export SFTP_DIRECTORY="/uploads"
+
+# Run the server locally
+python server.py
 ```
 
-### GitHub Actions Deployment
-This repository includes GitHub Actions workflows for CI/CD deployment.
-
-## Scheduling
-Configure Cloud Scheduler to run the export function on a schedule:
+### Build and Deploy to Cloud Run
 
 ```bash
-gcloud scheduler jobs create pubsub export-job \
-  --schedule "0 5 * * *" \
-  --topic export-to-sftp-trigger \
-  --message-body '{"config": "default"}' \
-  --time-zone "America/Chicago"
+# Make the script executable
+chmod +x scripts/setup_cloudrun.sh
+
+# Run deployment script
+./scripts/setup_cloudrun.sh
+```
+
+### Setting Up Pub/Sub Integration
+
+```bash
+# Make the script executable
+chmod +x scripts/setup_pubsub.sh  
+
+# Run the Pub/Sub setup script
+./scripts/setup_pubsub.sh
+```
+
+### Setting Up Cloud Scheduler
+
+```bash
+# Make the script executable
+chmod +x scripts/setup_schedulers.sh
+
+# Run the scheduler setup script
+./scripts/setup_schedulers.sh
+```
+
+## Usage
+
+### Triggering Exports via HTTP
+
+```bash
+# Direct API call 
+curl -X POST https://your-service-url/ \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $(gcloud auth print-identity-token)" \
+  -d '{"export_name":"product_data","date":"2025-03-17"}'
+```
+
+### Triggering Exports via Pub/Sub
+
+```bash
+# Publish message to Pub/Sub topic
+gcloud pubsub topics publish boxout-sftp-export-triggers \
+  --message='{"export_name":"product_data","date":"2025-03-17"}'
+```
+
+### Checking for Failed Transfers
+
+```bash
+# Run the check script
+python scripts/failed_transfers.py --export-name PnL_Amazon --date 20250317 \
+  --gcs-prefix PnL_Amazon/20250317/
+```
+
+### Retrying Failed Transfers
+
+```bash
+# Retry failed transfers
+python scripts/retry_transfers.py --export-name PnL_Amazon --date 20250317 \
+  --missing-files missing_files.txt
+```
+
+## Metadata Table Schema
+
+```sql
+CREATE TABLE IF NOT EXISTS `project.dataset.export_metadata` (
+  export_id STRING NOT NULL,
+  export_name STRING NOT NULL,
+  source_table STRING NOT NULL,
+  destination_uri STRING NOT NULL,
+  status STRING NOT NULL,
+  rows_exported INT64,
+  started_at TIMESTAMP NOT NULL,
+  completed_at TIMESTAMP,
+  error_message STRING,
+  PRIMARY KEY(export_id) NOT ENFORCED
+)
+PARTITION BY DATE(started_at)
+CLUSTER BY export_name, status;
 ```
 
 ## Monitoring
-Monitor function execution through:
-- Cloud Functions logs
-- Email notifications
-- Slack alerts
+
+Monitor the service through:
+- Cloud Run logs
+- Cloud Logging
 - BigQuery metadata table
+- Cloud Scheduler execution history
+- Pub/Sub message delivery logs
+
+## Environment Variables
+
+- `SFTP_HOST`: SFTP server hostname
+- `SFTP_USERNAME`: SFTP username  
+- `SFTP_PASSWORD`: SFTP password
+- `SFTP_DIRECTORY`: Base directory on SFTP server
+- `GCS_BUCKET`: GCS bucket for temporary storage
+- `EXPORT_METADATA_TABLE`: BigQuery table for export metadata
+- `DEBUG`: Set to "True" for verbose logging
