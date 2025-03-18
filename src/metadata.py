@@ -176,12 +176,8 @@ def get_export_status(export_id: str) -> Dict[str, Any]:
     raise Exception(f"Export {export_id} not found")
 
 
-if __name__ == "__main__":
-    from dotenv import load_dotenv
-
-    # Load environment variables from .env file
-    load_dotenv()
-
+def main():
+    """Main entry point for the CLI."""
     # Set up command line argument parsing for testing
     parser = argparse.ArgumentParser(description="Manage export metadata")
     subparsers = parser.add_subparsers(dest="command", help="Command to execute")
@@ -238,3 +234,12 @@ if __name__ == "__main__":
                 print(f"  {key}: {value}")
         except Exception as e:
             print(f"Error retrieving status: {e}")
+
+
+if __name__ == "__main__":
+    from dotenv import load_dotenv
+
+    # Load environment variables from .env file
+    load_dotenv()
+
+    main()
