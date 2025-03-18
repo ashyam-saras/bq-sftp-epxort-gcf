@@ -50,7 +50,6 @@ gcloud run deploy ${SERVICE_NAME} \
   --set-env-vars="SFTP_USERNAME=${SFTP_USERNAME:-saras}" \
   --set-env-vars="SFTP_PASSWORD=${SFTP_PASSWORD:-1pEphpq1}" \
   --set-env-vars="SFTP_DIRECTORY=${SFTP_DIRECTORY:-/saras}" \
-  --set-env-vars="DEBUG=True" \
   --set-env-vars="PYTHONUNBUFFERED=1" \
   --cpu=1 \
   --concurrency=1 \
