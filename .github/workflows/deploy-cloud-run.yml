@@ -3,6 +3,12 @@ name: Deploy to Cloud Run
 on:
   push:
     branches: [ main ]
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'requirements.txt'
+      - 'Dockerfile'
+      - '.github/workflows/deploy-cloud-run.yml'
   workflow_dispatch:
 
 env:
