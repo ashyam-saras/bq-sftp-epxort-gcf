@@ -16,7 +16,7 @@ from src.bigquery import construct_gcs_uri, delete_table, export_table_to_gcs
 from src.config import load_config
 from src.helpers import cprint
 from src.metadata import complete_export, fail_export, start_export
-from src.sftp import check_sftp_credentials, upload_from_gcs, upload_from_gcs_batch_parallel
+from src.sftp import check_sftp_credentials, upload_from_gcs, upload_from_gcs_parallel
 
 
 def export_to_sftp(config: Dict[str, Any], export_name: str, date: Optional[datetime.date] = None) -> Dict[str, Any]:
@@ -73,7 +73,7 @@ def export_to_sftp(config: Dict[str, Any], export_name: str, date: Optional[date
 
     # SFTP folder structure
     base_dir = PurePosixPath(sftp_config["directory"])
-    sftp_dir = str(base_dir / date_str / export_name)
+    sftp_dir = str(base_dir)
     sftp_config = {**sftp_config, "directory": sftp_dir}
     cprint(f"SFTP destination directory: {sftp_dir}", severity="INFO")
 
@@ -129,10 +129,23 @@ def export_to_sftp(config: Dict[str, Any], export_name: str, date: Optional[date
             )
 
             # Prepare the file mappings for batch upload
-            file_mappings = [(f"gs://{bucket_name}/{blob.name}", blob.name.split("/")[-1]) for blob in blobs]
+            file_mappings = []
+            for blob in blobs:
+                gcs_uri = f"gs://{bucket_name}/{blob.name}"
+                original_filename = blob.name.split("/")[-1]
+
+                # Replace the first hyphen with underscore in the filename
+                # Find the position of the first hyphen
+                parts = original_filename.split("-", 1)
+                if len(parts) > 1:
+                    modified_filename = f"{parts[0]}_{parts[1]}"
+                else:
+                    modified_filename = original_filename
+
+                file_mappings.append((gcs_uri, modified_filename))
 
             # Use the optimized batch upload function
-            files_transferred = upload_from_gcs_batch_parallel(
+            files_transferred = upload_from_gcs_parallel(
                 sftp_config=sftp_config,
                 file_mappings=file_mappings,
                 max_workers=10,  # Adjust based on your needs
@@ -140,7 +153,7 @@ def export_to_sftp(config: Dict[str, Any], export_name: str, date: Optional[date
 
         else:
             # Single file case remains unchanged
-            remote_filename = f"{export_name}-{date_str}.csv"
+            remote_filename = f"{export_name}_{date_str}.csv"
             if destination_uri.endswith(".gz"):
                 remote_filename += ".gz"
 
