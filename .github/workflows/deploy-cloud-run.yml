@@ -13,7 +13,7 @@ on:
 
 env:
   PROJECT_ID: insightsprod
-  SERVICE_NAME: bq-sftp-export
+  SERVICE_NAME: boxout-bq-sftp-export
   ARTIFACT_REPOSITORY: sftp-export
   REGION: us-central1
 
@@ -45,8 +45,8 @@ jobs:
       
     - name: Build and push image to Google Container Registry
       run: |
-        docker build -t ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.ARTIFACT_REPOSITORY }}:${{ github.sha }} .
-        docker push ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.ARTIFACT_REPOSITORY }}:${{ github.sha }}
+        docker build -t ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.ARTIFACT_REPOSITORY }}/${{ env.SERVICE_NAME }}:${{ github.sha }} .
+        docker push ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.ARTIFACT_REPOSITORY }}/${{ env.SERVICE_NAME }}:${{ github.sha }}
         
     - name: Deploy to Cloud Run
       id: deploy
@@ -54,7 +54,7 @@ jobs:
       with:
         service: ${{ env.SERVICE_NAME }}
         region: ${{ env.REGION }}
-        image: ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.ARTIFACT_REPOSITORY }}:${{ github.sha }}
+        image: ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.ARTIFACT_REPOSITORY }}/${{ env.SERVICE_NAME }}:${{ github.sha }}
         env_vars: |
           SFTP_HOST=${{ vars.SFTP_HOST }}
           SFTP_USERNAME=${{ vars.SFTP_USERNAME }}
