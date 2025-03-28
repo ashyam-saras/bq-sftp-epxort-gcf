@@ -13,8 +13,7 @@ from src.sftp import (
     ensure_sftp_directory,
     parse_gcs_uri,
     upload_from_gcs,
-    upload_from_gcs_batch,
-    upload_from_gcs_batch_parallel,
+    upload_from_gcs_parallel,
 )
 
 
@@ -138,47 +137,6 @@ def test_upload_from_gcs_with_gcs_error(mock_sftp_connection, mock_gcs, sftp_con
     with patch("src.sftp.cprint"):
         with pytest.raises(ConfigError, match="File not found in GCS"):
             upload_from_gcs(sftp_config, "gs://bucket-name/nonexistent.csv", "remote.csv")
-
-
-def test_upload_from_gcs_batch(mock_sftp_connection, mock_gcs, sftp_config):
-    """Test batch uploading files from GCS to SFTP."""
-    mock_transport, mock_sftp = mock_sftp_connection
-
-    # Mock the _download_and_upload function
-    with patch("src.sftp._download_and_upload") as mock_download_upload, patch("src.sftp.cprint"):
-
-        file_mappings = [
-            ("gs://bucket/file1.csv", "remote1.csv"),
-            ("gs://bucket/file2.csv", "remote2.csv"),
-            ("gs://bucket/file3.csv", "remote3.csv"),
-        ]
-
-        result = upload_from_gcs_batch(sftp_config, file_mappings)
-
-        # Verify the result and function calls
-        assert result == 3  # All 3 files transferred
-        assert mock_download_upload.call_count == 3
-
-        # Verify connection was established and closed once
-        mock_sftp.close.assert_called_once()
-        mock_transport.close.assert_called_once()
-
-
-def test_upload_from_gcs_batch_empty(sftp_config):
-    """Test batch upload with empty file list."""
-    with patch("src.sftp.cprint"):
-        result = upload_from_gcs_batch(sftp_config, [])
-        assert result == 0
-
-
-def test_upload_from_gcs_batch_connection_error(sftp_config):
-    """Test error handling for batch upload when connection fails."""
-    with patch("src.sftp.create_sftp_connection") as mock_create_conn, patch("src.sftp.cprint"):
-        # Simulate connection error
-        mock_create_conn.side_effect = paramiko.ssh_exception.SSHException("Connection failed")
-
-        with pytest.raises(ConfigError, match="SFTP batch upload failed"):
-            upload_from_gcs_batch(sftp_config, [("gs://bucket/file.csv", "remote.csv")])
 
 
 def test_ensure_sftp_directory_exists(mock_sftp_connection):
@@ -346,7 +304,7 @@ def test_upload_from_gcs_batch_parallel_isolated(mock_gcs, sftp_config):
     ):
 
         # Call the function under test
-        result = upload_from_gcs_batch_parallel(sftp_config, file_mappings, max_workers=2)
+        result = upload_from_gcs_parallel(sftp_config, file_mappings, max_workers=2)
 
         # Verify results
         assert result == 2
@@ -378,8 +336,117 @@ def test_upload_from_gcs_batch_parallel_with_failures(mock_gcs, sftp_config):
     ):
 
         # Call the function
-        result = upload_from_gcs_batch_parallel(sftp_config, file_mappings, max_workers=2)
+        result = upload_from_gcs_parallel(sftp_config, file_mappings, max_workers=2)
 
         # Verify results - should have 1 success and 1 failure
         assert result == 1
         assert mock_executor.submit.call_count == 2
+
+
+def test_upload_from_gcs_file_not_found_error(mock_sftp_connection, mock_gcs, sftp_config):
+    """Test handling of file not found error in upload_from_gcs."""
+    mock_storage_client, mock_bucket, _ = mock_gcs
+
+    # Make get_blob return None to simulate missing file
+    mock_bucket.get_blob.return_value = None
+
+    with patch("src.sftp.cprint"):
+        # The function actually wraps FileNotFoundError with ConfigError
+        with pytest.raises(ConfigError, match="File not found in GCS"):
+            upload_from_gcs(sftp_config, "gs://bucket-name/nonexistent.csv", "remote.csv")
+
+
+def test_upload_from_gcs_batch_parallel_error(sftp_config):
+    """Test error handling in main parallel upload function."""
+    file_mappings = [("gs://bucket/file.csv", "remote.csv")]
+
+    # Make the main function raise an exception
+    with patch("src.sftp.concurrent.futures.ThreadPoolExecutor") as mock_pool, patch("src.sftp.cprint"):
+        # Update the error to match the exact error message in the function
+        mock_pool.side_effect = Exception("Thread pool error")
+
+        # Update to match the actual error message that will be raised
+        with pytest.raises(Exception, match="Thread pool error"):
+            upload_from_gcs_parallel(sftp_config, file_mappings)
+
+
+# For CLI tests, we need to mock argparse at module import time
+@patch("argparse.ArgumentParser")
+def test_cli_check_credentials(mock_argparser):
+    """Test the CLI check credentials command."""
+    # Setup the mock parser
+    mock_parser = MagicMock()
+    mock_subparsers = MagicMock()
+    mock_check_parser = MagicMock()
+
+    mock_parser.add_subparsers.return_value = mock_subparsers
+    mock_subparsers.add_parser.return_value = mock_check_parser
+    mock_argparser.return_value = mock_parser
+
+    # Mock return value for parse_args
+    mock_args = MagicMock(command="check", host=None, port=22, timeout=10)
+    mock_parser.parse_args.return_value = mock_args
+
+    # Mock the check_sftp_credentials function to return True
+    with patch("src.sftp.check_sftp_credentials", return_value=True) as mock_check, patch.dict(
+        "os.environ", {"SFTP_HOST": "example.com", "SFTP_USERNAME": "user", "SFTP_PASSWORD": "pass"}
+    ), patch("builtins.print") as mock_print:
+
+        # Import the main module and call main directly
+        from src.sftp import main
+
+        # Call the function
+        try:
+            main()
+        except SystemExit:
+            pass
+
+        # Verify the correct function was called
+        mock_check.assert_called_once()
+        # Check that success message was printed
+        mock_print.assert_any_call("✅ Connection successful!")
+
+
+@patch("argparse.ArgumentParser")
+def test_cli_upload_command(mock_argparser):
+    """Test the CLI upload command."""
+    # Setup the mock parser
+    mock_parser = MagicMock()
+    mock_subparsers = MagicMock()
+    mock_upload_parser = MagicMock()
+
+    mock_parser.add_subparsers.return_value = mock_subparsers
+    mock_subparsers.add_parser.return_value = mock_upload_parser
+    mock_argparser.return_value = mock_parser
+
+    # Mock return value for parse_args
+    mock_args = MagicMock(
+        command="upload",
+        host=None,
+        port=22,
+        username=None,
+        password=None,
+        directory="/",
+        gcs_uri="gs://bucket/file.csv",
+        remote_file="remote.csv",
+    )
+    mock_parser.parse_args.return_value = mock_args
+
+    # Mock the upload_from_gcs function directly
+    with patch("src.sftp.upload_from_gcs") as mock_upload, patch.dict(
+        "os.environ", {"SFTP_HOST": "example.com", "SFTP_USERNAME": "user", "SFTP_PASSWORD": "pass"}
+    ), patch("builtins.print") as mock_print:
+
+        # Import the main module and call main directly
+        from src.sftp import main
+
+        # Call the function
+        try:
+            main()
+        except SystemExit:
+            pass
+
+        # Verify the correct function was called
+        mock_upload.assert_called_once()
+        # Check that success message was printed
+        mock_print.assert_any_call("✅ Upload successful!")
