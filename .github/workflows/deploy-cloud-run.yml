@@ -25,11 +25,6 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
       
-    - name: Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.11'
-        
     - name: Google Auth
       uses: google-github-actions/auth@v2
       with:
@@ -45,7 +40,7 @@ jobs:
       
     - name: Build and push image to Google Container Registry
       run: |
-        docker build -t ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.ARTIFACT_REPOSITORY }}/${{ env.SERVICE_NAME }}:${{ github.sha }} .
+        docker build --platform linux/amd64 -t ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.ARTIFACT_REPOSITORY }}/${{ env.SERVICE_NAME }}:${{ github.sha }} .
         docker push ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.ARTIFACT_REPOSITORY }}/${{ env.SERVICE_NAME }}:${{ github.sha }}
         
     - name: Deploy to Cloud Run
