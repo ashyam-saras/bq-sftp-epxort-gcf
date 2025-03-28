@@ -408,7 +408,7 @@ def create_sftp_connection(host: str, port: int, username: str, password: str):
     return transport, sftp
 
 
-if __name__ == "__main__":
+def main():
     import argparse
 
     from dotenv import load_dotenv
@@ -466,7 +466,6 @@ if __name__ == "__main__":
             exit(1)
 
     elif args.command == "upload":
-        # Upload file from GCS to SFTP
         try:
             print(f"Uploading {args.gcs_uri} to SFTP at {host}:{port}{directory}/{args.remote_file}")
             upload_from_gcs(sftp_config, args.gcs_uri, args.remote_file)
@@ -474,3 +473,7 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"❌ Upload failed: {str(e)}")
             exit(1)
+
+
+if __name__ == "__main__":
+    main()
