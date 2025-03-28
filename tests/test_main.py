@@ -49,8 +49,6 @@ def mock_all_dependencies():
     ) as mock_export_to_gcs, patch(
         "src.main.upload_from_gcs"
     ) as mock_upload_from_gcs, patch(
-        "src.main.upload_from_gcs_batch_parallel"
-    ) as mock_batch_upload, patch(
         "src.main.check_sftp_credentials"
     ) as mock_check_sftp, patch(
         "src.main.delete_table"
@@ -71,7 +69,6 @@ def mock_all_dependencies():
             "fail_export": mock_fail_export,
             "export_to_gcs": mock_export_to_gcs,
             "upload_from_gcs": mock_upload_from_gcs,
-            "batch_upload": mock_batch_upload,
             "check_sftp": mock_check_sftp,
             "delete_table": mock_delete_table,
             "cprint": mock_cprint,
@@ -127,45 +124,6 @@ def test_export_to_sftp_date_range_success(mock_config, mock_all_dependencies):
 
     # Verify temp table was deleted
     mocks["delete_table"].assert_called_once_with("temp_table", "project.dataset.table2")
-
-
-@patch("src.main.storage")
-def test_export_to_sftp_batch_parallel(mock_storage, mock_config, mock_all_dependencies):
-    """Test batch parallel upload mode."""
-    # Setup mocks
-    mocks = mock_all_dependencies
-    mocks["load_config"].return_value = mock_config
-    mocks["export_to_gcs"].return_value = ("gs://test-bucket/path/file*.csv", 200, "")
-    mocks["batch_upload"].return_value = 3  # 3 files transferred
-
-    # Mock storage client and buckets to prevent actual GCS calls
-    mock_storage_client = MagicMock()
-    mock_bucket = MagicMock()
-    mock_blob = MagicMock()
-    mock_blob.name = "path/file000.csv"
-
-    mock_storage.Client.return_value = mock_storage_client
-    mock_storage_client.bucket.return_value = mock_bucket
-    mock_bucket.list_blobs.return_value = [mock_blob]
-
-    # Modify config to use batch_parallel mode
-    test_config = mock_config.copy()
-    test_config["sftp"]["upload_mode"] = "batch_parallel"
-    mocks["load_config"].return_value = test_config
-
-    # Also patch time.time to prevent timing issues
-    with patch("src.main.time.time", return_value=100.0):
-        # Call the function with correct parameter order
-        result = export_to_sftp(test_config, "test_export")
-
-    # Verify results
-    assert result["status"] == "success"
-    assert result["rows_exported"] == 200
-    assert result["files_transferred"] == 3
-
-    # Verify batch upload was called instead of individual upload
-    mocks["batch_upload"].assert_called_once()
-    mocks["upload_from_gcs"].assert_not_called()
 
 
 def test_export_to_sftp_sftp_error(mock_config, mock_all_dependencies):
