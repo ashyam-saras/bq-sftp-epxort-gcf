@@ -115,6 +115,7 @@ def export_table_to_gcs(
     # Configure the extract job
     job_config = bigquery.ExtractJobConfig()
     job_config.print_header = True
+    job_config.field_delimiter = "|"  # Set pipe as delimiter
 
     if compression:
         cprint(f"Exporting {source_to_extract} to {gcs_uri} with GZIP compression", severity="INFO")
