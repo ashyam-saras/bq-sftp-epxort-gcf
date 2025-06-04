@@ -1,0 +1,75 @@
+name: Setup PubSub Integration
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - 'scripts/setup_pubsub.sh'
+      - '.github/workflows/deploy-pubsub.yml'
+
+env:
+  PROJECT_ID: insightsprod
+  REGION: us-central1
+  SERVICE_NAME: boxout-bq-sftp-export
+  TOPIC_NAME: boxout-sftp-export-triggers
+  SERVICE_ACCOUNT: boxout-sftp-export@insightsprod.iam.gserviceaccount.com
+
+jobs:
+  setup-pubsub:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Google Auth
+      uses: google-github-actions/auth@v2
+      with:
+        credentials_json: ${{ secrets.GCP_SA_KEY }}
+        
+    - name: Set up Cloud SDK
+      uses: google-github-actions/setup-gcloud@v2
+      with:
+        project_id: ${{ env.PROJECT_ID }}
+        
+    - name: Get Project Number
+      id: project-number
+      run: |
+        PROJECT_NUMBER=$(gcloud projects describe ${{ env.PROJECT_ID }} --format="value(projectNumber)")
+        echo "PROJECT_NUMBER=$PROJECT_NUMBER" >> $GITHUB_OUTPUT
+      
+    - name: Get Service URL
+      id: service-url
+      run: |
+        SERVICE_URL=$(gcloud run services describe ${{ env.SERVICE_NAME }} --region ${{ env.REGION }} --format='value(status.url)')
+        echo "SERVICE_URL=$SERVICE_URL" >> $GITHUB_OUTPUT
+        
+    - name: Create PubSub Topic
+      run: |
+        if ! gcloud pubsub topics describe ${{ env.TOPIC_NAME }} &> /dev/null; then
+          echo "📬 Creating Pub/Sub topic ${{ env.TOPIC_NAME }}..."
+          gcloud pubsub topics create ${{ env.TOPIC_NAME }}
+        else
+          echo "✅ PubSub topic ${{ env.TOPIC_NAME }} already exists"
+        fi
+      
+    - name: Setup PubSub Subscription
+      run: |
+        SUBSCRIPTION_NAME="${{ env.TOPIC_NAME }}-subscription"
+        
+        if gcloud pubsub subscriptions describe ${SUBSCRIPTION_NAME} &> /dev/null; then
+          echo "🗑️ Deleting existing subscription ${SUBSCRIPTION_NAME}..."
+          gcloud pubsub subscriptions delete ${SUBSCRIPTION_NAME}
+        fi
+        
+        echo "🔄 Creating Pub/Sub subscription to Cloud Run..."
+        gcloud pubsub subscriptions create ${SUBSCRIPTION_NAME} \
+          --topic=${{ env.TOPIC_NAME }} \
+          --push-endpoint=${{ steps.service-url.outputs.SERVICE_URL }} \
+          --push-auth-service-account=${{ env.SERVICE_ACCOUNT }} \
+          --ack-deadline=600 \
+          --message-retention-duration=1d
+        
+    - name: Completion Message
+      run: echo "✅ Pub/Sub setup completed!"
