@@ -65,7 +65,14 @@ def export_to_sftp(config: Dict[str, Any], export_name: str, date: Optional[date
     if export_type == "date_range":
         date_column = export_config.get("date_column")
         days_lookback = export_config.get("days_lookback")
-        cprint(f"Using date range export with column '{date_column}' and {days_lookback} days lookback")
+        cprint(
+            f"Using date range export with column '{date_column}' and {days_lookback} days lookback",
+            severity="INFO",
+            source_table=source_table,
+            gcs_bucket=gcs_bucket,
+        )
+    elif export_type == "full":
+        cprint(f"Using full export", severity="INFO", source_table=source_table, gcs_bucket=gcs_bucket)
 
     # Prepare paths and filenames
     gcs_uri_prefix = construct_gcs_uri(gcs_bucket, export_name, date)
