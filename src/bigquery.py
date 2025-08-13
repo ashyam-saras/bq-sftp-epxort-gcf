@@ -96,12 +96,12 @@ def export_table_to_gcs(
 
         query = build_export_query(source_table=source_table, date_column=date_column, days_lookback=days_lookback)
         source_to_extract = temp_table_id
-        cprint(f"Using date range export with temp table {temp_table_id}")
+        cprint(f"Using date range export with temp table {temp_table_id}", source_table=source_table, gcs_uri=gcs_uri)
 
     # For full exports, use the source table directly
     else:
         source_to_extract = source_table
-        cprint(f"Using full export directly from source table")
+        cprint(f"Using full export directly from source table", source_table=source_table, gcs_uri=gcs_uri)
 
     # If we need to create a temp table
     if temp_table_name:
