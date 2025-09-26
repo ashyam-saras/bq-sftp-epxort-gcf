@@ -1,5 +1,5 @@
 """
-Configuration loading and validation for BigQuery to SFTP export function.
+Configuration loading and validation for GCS→SFTP export function.
 """
 
 import json
@@ -44,7 +44,7 @@ def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
             except json.JSONDecodeError:
                 raise ConfigError("Invalid JSON in EXPORT_CONFIG environment variable")
         else:
-            # Build config from individual environment variables
+            # Build minimal config from individual environment variables
             config = {
                 "sftp": {
                     "host": os.environ.get("SFTP_HOST"),
@@ -52,11 +52,9 @@ def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
                     "username": os.environ.get("SFTP_USERNAME"),
                     "password": os.environ.get("SFTP_PASSWORD"),
                     "directory": os.environ.get("SFTP_DIRECTORY", "/"),
-                    "upload_method": os.environ.get("SFTP_UPLOAD_METHOD", "download"),
                 },
+                # Optional: keep for compatibility; not required by the service
                 "gcs": {"bucket": os.environ.get("GCS_BUCKET")},
-                "metadata": {"export_metadata_table": os.environ.get("EXPORT_METADATA_TABLE", "")},
-                "exports": {},
             }
 
     # Validate config
@@ -65,40 +63,18 @@ def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
 
 
 def _validate_config(config: Dict[str, Any]) -> None:
-    """Validate configuration and set defaults."""
-    if "exports" not in config or not isinstance(config["exports"], dict):
-        raise ConfigError("Missing or invalid exports section in config")
-
-    for name, export in config["exports"].items():
-        # Validate required fields
-        if "source_table" not in export:
-            raise ConfigError(f"Missing source_table in export config: {name}")
-
-        # Set defaults for optional fields
-        export["export_type"] = export.get("export_type", "full")
-
-        # Validate date range export configuration
-        if export.get("date_column") and "days_lookback" not in export:
-            export["days_lookback"] = 7
-            cprint(f"Export '{name}' has date_column but no days_lookback, using default: 7 days", severity="INFO")
-
+    """Validate configuration for GCS-only operation."""
     # SFTP configuration
-    if "sftp" not in config:
-        # Set default SFTP config from environment variables
-        config["sftp"] = {
-            "host": os.environ.get("SFTP_HOST", ""),
-            "port": int(os.environ.get("SFTP_PORT", 22)),
-            "username": os.environ.get("SFTP_USERNAME", ""),
-            "password": os.environ.get("SFTP_PASSWORD", ""),
-            "directory": os.environ.get("SFTP_DIRECTORY", "/"),
-        }
+    if "sftp" not in config or not isinstance(config["sftp"], dict):
+        raise ConfigError("Missing sftp configuration")
 
-    # GCS configuration
-    if "gcs" not in config:
-        # Set default GCS config from environment variables
-        config["gcs"] = {"bucket": os.environ.get("GCS_BUCKET", "")}
+    required = ["host", "username", "password", "directory"]
+    missing = [k for k in required if not config["sftp"].get(k)]
+    if missing:
+        raise ConfigError(f"Missing SFTP configuration values: {', '.join(missing)}")
 
-    # Keep just the export_metadata_table part
-    if "metadata" not in config:
-        # Set default metadata config from environment variables
-        config["metadata"] = {"export_metadata_table": os.environ.get("EXPORT_METADATA_TABLE", "")}
+    # No exports required; any legacy keys are ignored
+    if "exports" in config:
+        cprint("Ignoring legacy 'exports' configuration in GCS-only mode", severity="WARNING")
+
+    cprint("Configuration validated for scheduled-query GCS-only mode", severity="INFO")

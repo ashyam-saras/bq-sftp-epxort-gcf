@@ -1,241 +1,159 @@
 """
-Main entry point for BigQuery to SFTP export function.
-Orchestrates the entire export process from BigQuery query to SFTP upload.
+Main entry point for GCS to SFTP export function.
+Orchestrates moving pre-exported data from GCS to SFTP.
 """
 
 import base64
 import datetime
+import fnmatch
 import json
 import time
 from pathlib import PurePosixPath
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from google.cloud import storage
 
-from src.bigquery import construct_gcs_uri, delete_table, export_table_to_gcs
 from src.config import load_config
 from src.helpers import cprint
-from src.metadata import complete_export, fail_export, start_export
 from src.sftp import check_sftp_credentials, upload_from_gcs, upload_from_gcs_parallel
 
 
-def export_to_sftp(config: Dict[str, Any], export_name: str, date: Optional[datetime.date] = None) -> Dict[str, Any]:
-    """
-    Orchestrate the end-to-end export process from BigQuery to SFTP.
-
-    Args:
-        config: Configuration dictionary containing all necessary parameters
-        export_name: Name of the export to process
-        date: Date to use for the export (defaults to today)
-
-    Returns:
-        Dict with export results information
-    """
-    overall_start_time = time.time()
-    date = date or datetime.datetime.now().date()
+def _resolve_date_token(value: str, date: datetime.date) -> str:
+    """Replace {date} token with YYYYMMDD in provided string."""
+    if not isinstance(value, str):
+        return value
     date_str = date.strftime(r"%Y%m%d")
-    export_id = None
-    temp_table = None
+    return value.replace("{date}", date_str)
+
+
+def _parse_gcs_url(url: str) -> Tuple[str, str]:
+    """Split gs://bucket/path into (bucket, path)."""
+    if not url.startswith("gs://"):
+        raise ValueError(f"Invalid GCS URL: {url}")
+    path = url[5:]
+    parts = path.split("/", 1)
+    if len(parts) != 2:
+        raise ValueError(f"Invalid GCS URL format: {url}")
+    return parts[0], parts[1]
+
+
+def _list_gcs_files_by_pattern(storage_client: storage.Client, pattern_url: str) -> List[storage.Blob]:
+    """List blobs matching a pattern (supports * wildcard on basename)."""
+    bucket_name, path = _parse_gcs_url(pattern_url)
+
+    # Derive prefix up to first * to limit listing
+    star_index = path.find("*")
+    if star_index == -1:
+        # Exact object path
+        prefix = path
+        filter_pattern = None
+    else:
+        # include preceding path segment up to last '/'
+        slash_index = path.rfind("/", 0, star_index)
+        prefix = path[: slash_index + 1] if slash_index != -1 else ""
+        filter_pattern = path
+
+    bucket = storage_client.bucket(bucket_name)
+    blobs_iter = bucket.list_blobs(prefix=prefix)
+    blobs = list(blobs_iter)
+
+    if filter_pattern:
+        matched = [
+            b for b in blobs if fnmatch.fnmatchcase(f"{bucket_name}/{b.name}", f"{bucket_name}/{filter_pattern}")
+        ]
+        return matched
+    return blobs
+
+
+def _list_gcs_files_by_prefix(
+    storage_client: storage.Client, prefix_url: str, name_pattern: Optional[str]
+) -> List[storage.Blob]:
+    bucket_name, path_prefix = _parse_gcs_url(prefix_url)
+    bucket = storage_client.bucket(bucket_name)
+    blobs = list(bucket.list_blobs(prefix=path_prefix))
+    if name_pattern:
+        matched = [b for b in blobs if fnmatch.fnmatchcase(b.name.split("/")[-1], name_pattern)]
+        return matched
+    return blobs
+
+
+def export_from_pattern(config: Dict[str, Any], export_name: str, resolved_pattern_or_prefix: str) -> Dict[str, Any]:
+    """Upload files matching a resolved GCS pattern/prefix to SFTP using current date for logs only."""
+    overall_start_time = time.time()
+    date = datetime.datetime.now().date()
+    date_str = date.strftime(r"%Y%m%d")
 
     cprint(
-        f"Starting export process '{export_name}' for date {date_str}",
+        f"Starting export '{export_name}' from '{resolved_pattern_or_prefix}'",
         severity="INFO",
         export_name=export_name,
         date=date_str,
     )
 
-    # Get export-specific config
-    export_config = config["exports"].get(export_name)
-    if not export_config:
-        cprint(f"Export '{export_name}' not found in configuration", severity="ERROR")
-        raise ValueError(f"Export '{export_name}' not found in configuration")
+    sftp_config = {**config["sftp"], "directory": str(PurePosixPath(config["sftp"]["directory"]))}
 
-    # Extract parameters
-    source_table = export_config["source_table"]
-    gcs_bucket = config["gcs"]["bucket"]
-    sftp_config = config["sftp"]
+    storage_client = storage.Client()
 
-    # Determine export type and parameters
-    export_type = export_config.get("export_type", "full")
-    cprint(f"Export type: {export_type}", source_table=source_table, gcs_bucket=gcs_bucket)
+    # Decide if it is a pattern (contains *) or a plain prefix
+    if "*" in resolved_pattern_or_prefix:
+        blobs = _list_gcs_files_by_pattern(storage_client, resolved_pattern_or_prefix)
+    else:
+        blobs = _list_gcs_files_by_prefix(storage_client, resolved_pattern_or_prefix, None)
 
-    # Parameters for date range exports
-    date_column = None
-    days_lookback = None
-    if export_type == "date_range":
-        date_column = export_config.get("date_column")
-        days_lookback = export_config.get("days_lookback")
-        cprint(
-            f"Using date range export with column '{date_column}' and {days_lookback} days lookback",
-            severity="INFO",
-            source_table=source_table,
-            gcs_bucket=gcs_bucket,
-        )
-    elif export_type == "full":
-        cprint(f"Using full export", severity="INFO", source_table=source_table, gcs_bucket=gcs_bucket)
-
-    # Prepare paths and filenames
-    gcs_uri_prefix = construct_gcs_uri(gcs_bucket, export_name, date)
-    remote_filename = f"{export_name}-{date_str}.csv"
-
-    # SFTP folder structure
-    base_dir = PurePosixPath(sftp_config["directory"])
-    sftp_dir = str(base_dir)
-    sftp_config = {**sftp_config, "directory": sftp_dir}
-    cprint(f"SFTP destination directory: {sftp_dir}", severity="INFO")
-
-    try:
-        # 1. Record start of export
-        cprint(f"Starting export process for {export_name}")
-        export_id = start_export(export_name, source_table, gcs_uri_prefix)
-        cprint(f"Export ID: {export_id} assigned", severity="INFO")
-
-        # 2. Export from BigQuery to GCS
-        destination_uri, row_count, temp_table = export_table_to_gcs(
-            source_table=source_table,
-            gcs_uri=gcs_uri_prefix,
-            date_column=date_column,
-            days_lookback=days_lookback,
-            compression=export_config.get("compress", True),
-        )
-        cprint(
-            f"BigQuery export complete with {row_count} rows",
-            severity="INFO",
-            destination=destination_uri,
-            temp_table=temp_table,
+    if not blobs:
+        raise FileNotFoundError(
+            f"No files found in GCS for export '{export_name}' using source '{resolved_pattern_or_prefix}'"
         )
 
-        # 3. Check SFTP credentials before attempting upload
-        check_sftp_credentials(sftp_config)
+    total_bytes = sum(int(b.size or 0) for b in blobs)
+    cprint(
+        f"Found {len(blobs)} files to upload to SFTP",
+        severity="INFO",
+        total_mb=f"{total_bytes/(1024*1024):.2f}",
+        source=resolved_pattern_or_prefix,
+    )
 
-        # 4. Upload from GCS to SFTP - Modified to handle sharded files
-        step_start = time.time()
-        cprint(f"Uploading files to SFTP", severity="INFO")
+    # SFTP credentials check
+    check_sftp_credentials(sftp_config)
 
-        # Handle GCS sharding by checking if destination_uri has a wildcard
-        if "*" in destination_uri:
-            # Get the bucket and prefix from the destination URI
-            bucket_name, prefix = destination_uri.strip("gs://").split("/", 1)
+    # Prepare mappings and upload
+    file_mappings = []
+    for blob in blobs:
+        gcs_uri = f"gs://{blob.bucket.name}/{blob.name}"
+        original_filename = blob.name.split("/")[-1]
+        parts = original_filename.split("-", 1)
+        remote_filename = f"{parts[0]}_{parts[1]}" if len(parts) > 1 else original_filename
+        file_mappings.append((gcs_uri, remote_filename))
 
-            # List all files in the bucket with the prefix
-            storage_client = storage.Client()
-            bucket = storage_client.bucket(bucket_name)
-            list_start = time.time()
-            blobs = list(bucket.list_blobs(prefix=prefix.split("*")[0]))
+    if len(file_mappings) == 1:
+        gcs_uri, remote_filename = file_mappings[0]
+        if gcs_uri.endswith(".gz") and not remote_filename.endswith(".gz"):
+            remote_filename = f"{remote_filename}.gz"
+        upload_from_gcs(sftp_config, gcs_uri, remote_filename)
+        files_transferred = 1
+        destination_path = f"{sftp_config['directory']}/{remote_filename}"
+    else:
+        files_transferred = upload_from_gcs_parallel(sftp_config, file_mappings, max_workers=10)
+        destination_path = f"{sftp_config['directory']}/*"
 
-            # Filter only matching files if we have a pattern
-            if "*" in prefix:
-                pattern = prefix.split("/")[-1].replace("*", "")
-                filtered_blobs = [b for b in blobs if pattern in b.name]
-                blobs = filtered_blobs if filtered_blobs else blobs
+    total_time = time.time() - overall_start_time
+    cprint(
+        f"Export '{export_name}' completed",
+        severity="INFO",
+        files=files_transferred,
+        destination=destination_path,
+        total_time=f"{total_time:.2f}s",
+    )
 
-            cprint(
-                f"Found {len(blobs)} files to upload to SFTP",
-                severity="INFO",
-                list_time=f"{time.time() - list_start:.2f}s",
-            )
-
-            # Prepare the file mappings for batch upload
-            file_mappings = []
-            for blob in blobs:
-                gcs_uri = f"gs://{bucket_name}/{blob.name}"
-                original_filename = blob.name.split("/")[-1]
-
-                # Replace the first hyphen with underscore in the filename
-                # Find the position of the first hyphen
-                parts = original_filename.split("-", 1)
-                if len(parts) > 1:
-                    modified_filename = f"{parts[0]}_{parts[1]}"
-                else:
-                    modified_filename = original_filename
-
-                file_mappings.append((gcs_uri, modified_filename))
-
-            # Use the optimized batch upload function
-            files_transferred = upload_from_gcs_parallel(
-                sftp_config=sftp_config,
-                file_mappings=file_mappings,
-                max_workers=10,  # Adjust based on your needs
-            )
-
-        else:
-            # Single file case remains unchanged
-            remote_filename = f"{export_name}_{date_str}.csv"
-            if destination_uri.endswith(".gz"):
-                remote_filename += ".gz"
-
-            cprint(
-                f"Uploading single file",
-                severity="INFO",
-                source=destination_uri,
-                destination=f"{sftp_dir}/{remote_filename}",
-            )
-
-            upload_from_gcs(sftp_config=sftp_config, gcs_uri=destination_uri, remote_filename=remote_filename)
-            files_transferred = 1
-
-        cprint(
-            f"SFTP upload complete: {files_transferred} files transferred",
-            severity="INFO",
-            step_time=f"{time.time() - step_start:.2f}s",
-        )
-
-        # 6. Record export completion
-        complete_export(export_id, row_count)
-
-        # 7. Clean up temporary table if it exists
-        if temp_table:
-            cprint("Cleaning up temporary resources", severity="INFO")
-            delete_table(temp_table, source_table)
-
-        # Calculate total process time
-        total_time = time.time() - overall_start_time
-
-        # Use path joining with / operator for display path
-        destination_path = f"{sftp_dir}/{remote_filename if 'remote_filename' in locals() else '*.csv.gz'}"
-
-        cprint(
-            f"Export process '{export_name}' completed successfully",
-            severity="INFO",
-            rows=row_count,
-            files=files_transferred,
-            destination=destination_path,
-            total_time=f"{total_time:.2f}s",
-        )
-
-        return {
-            "status": "success",
-            "export_id": export_id,
-            "export_name": export_name,
-            "rows_exported": row_count,
-            "destination": destination_path,
-            "date": date_str,
-            "files_transferred": files_transferred,
-            "total_time_seconds": round(total_time, 2),
-        }
-
-    except Exception as e:
-        # Handle any errors that occur during the export process
-        error_time = time.time() - overall_start_time
-        cprint(
-            f"Export failed after {error_time:.2f}s: {str(e)}",
-            severity="ERROR",
-            export_name=export_name,
-            export_id=export_id,
-        )
-
-        if export_id:
-            fail_export(export_id, str(e))
-
-        # Clean up temporary table on failure
-        if temp_table:
-            try:
-                delete_table(temp_table, source_table)
-                cprint("Cleaned up temporary table after failure", severity="INFO")
-            except Exception as cleanup_error:
-                cprint(f"Failed to clean up temporary table: {str(cleanup_error)}", severity="WARNING")
-
-        raise
+    return {
+        "status": "success",
+        "export_name": export_name,
+        "files_transferred": files_transferred,
+        "destination": destination_path,
+        "total_time_seconds": round(total_time, 2),
+        "total_mb": round(total_bytes / (1024 * 1024), 2),
+        "source": resolved_pattern_or_prefix,
+    }
 
 
 def cloud_function_handler(event: Dict[str, Any]) -> Dict[str, Any]:
@@ -300,7 +218,7 @@ if __name__ == "__main__":
     load_dotenv()
 
     # Parse command line arguments
-    parser = argparse.ArgumentParser(description="BigQuery to SFTP Export")
+    parser = argparse.ArgumentParser(description="GCS to SFTP Export")
     parser.add_argument("--export", required=True, help="Name of the export to run")
     parser.add_argument("--date", help="Export date in YYYY-MM-DD format (default: today)")
     parser.add_argument("--config", help="Path to config file (default: from environment)")
@@ -323,7 +241,7 @@ if __name__ == "__main__":
     try:
         result = export_to_sftp(config, args.export, export_date)
         print("Export completed successfully!")
-        print(f"Exported {result['rows_exported']} rows to {result['destination']}")
+        print(f"Transferred {result['files_transferred']} file(s) to {result['destination']}")
     except Exception as e:
         print(f"Export failed: {str(e)}")
         exit(1)

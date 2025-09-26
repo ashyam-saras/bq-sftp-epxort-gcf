@@ -2,82 +2,78 @@ import base64
 import datetime
 import json
 import os
+import re
 
 from flask import Flask, jsonify, request
 
 from src.config import load_config
 from src.helpers import cprint
-from src.main import export_to_sftp
+from src.main import export_from_pattern
 
 app = Flask(__name__)
 
 
 @app.route("/", methods=["POST"])
 def handle_request():
-    """Main endpoint that handles both Pub/Sub events and direct API calls"""
+    """Endpoint that handles Scheduled Query Pub/Sub events only."""
     try:
         envelope = request.get_json()
+        if not envelope or "message" not in envelope or "data" not in envelope["message"]:
+            return jsonify({"status": "error", "message": "Invalid Pub/Sub envelope"}), 400
 
-        # Check if this is a Pub/Sub message
-        if envelope and "message" in envelope:
-            # Extract the Pub/Sub message
-            message = envelope["message"]
+        # Decode base64 data
+        data_str = base64.b64decode(envelope["message"]["data"]).decode("utf-8")
+        try:
+            # Parse JSON payload
+            data = json.loads(data_str)
+        except json.JSONDecodeError:
+            return jsonify({"status": "error", "message": "Invalid JSON in Pub/Sub message"}), 400
 
-            if "data" in message:
-                # Decode base64 data
-                data_str = base64.b64decode(message["data"]).decode("utf-8")
-                try:
-                    # Parse JSON payload
-                    data = json.loads(data_str)
-                    cprint(f"Received Pub/Sub message: {data}", severity="INFO")
+        if data.get("dataSourceId") != "scheduled_query" or not isinstance(data.get("params"), dict):
+            return jsonify({"status": "error", "message": "Unsupported payload; expected Scheduled Query"}), 400
 
-                    # Extract export parameters
-                    export_name = data.get("export_name")
-                    date_str = data.get("date")
+        query_text = data["params"].get("query", "")
+        run_time = data.get("runTime") or data.get("endTime")
 
-                    if not export_name:
-                        return jsonify({"status": "error", "message": "export_name is required"}), 400
+        # Extract the EXPORT DATA URI from the query
+        # Expect: uri = 'gs://bucket/export_name/%s/export_name-%s-*.csv.gz'
+        uri_match = re.search(r"uri\s*=\s*'([^']+)'", query_text)
+        if not uri_match:
+            return (
+                jsonify({"status": "error", "message": "Unable to find EXPORT DATA uri in Scheduled Query"}),
+                400,
+            )
+        uri_template = uri_match.group(1)
 
-                    # Parse date if provided
-                    export_date = None
-                    if date_str:
-                        try:
-                            export_date = datetime.datetime.strptime(date_str, r"%Y-%m-%d").date()
-                        except ValueError:
-                            return (
-                                jsonify(
-                                    {"status": "error", "message": f"Invalid date format: {date_str}, use YYYY-MM-DD"}
-                                ),
-                                400,
-                            )
-
-                    # Run the export process
-                    config = load_config("configs/default.json")  # Add explicit path
-                    cprint(f"Starting export via Pub/Sub: {export_name}", severity="INFO")
-                    result = export_to_sftp(config, export_name, export_date)
-                    return jsonify(result)
-                except json.JSONDecodeError:
-                    return jsonify({"status": "error", "message": "Invalid JSON in Pub/Sub message"}), 400
-
-        # Handle direct API invocation
-        config = load_config("configs/default.json")  # Add explicit path
-        export_name = envelope.get("export_name")
-        date_str = envelope.get("date")
-
-        if not export_name:
-            return jsonify({"status": "error", "message": "export_name is required"}), 400
-
-        # Parse date if provided
+        # Resolve %s placeholders using date from run_time
         export_date = None
-        if date_str:
+        if run_time:
             try:
-                export_date = datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
-            except ValueError:
-                return jsonify({"status": "error", "message": f"Invalid date format: {date_str}, use YYYY-MM-DD"}), 400
+                dt = datetime.datetime.fromisoformat(run_time.replace("Z", "+00:00"))
+                export_date = dt.strftime(r"%Y%m%d")
+            except Exception:
+                export_date = None
 
-        # Run the export process
-        cprint(f"Starting export via API request: {export_name}", severity="INFO")
-        result = export_to_sftp(config, export_name, export_date)
+        if not export_date:
+            return jsonify({"status": "error", "message": "Missing or invalid runTime for date resolution"}), 400
+
+        # Replace all %s with export_date
+        resolved_uri = uri_template.replace("%s", export_date)
+
+        # Use the export_name as the first path segment after bucket
+        m = re.match(r"gs://[^/]+/([^/]+)/", resolved_uri)
+        export_name = m.group(1) if m else "scheduled_export"
+
+        # Call export from pattern/prefix
+        config = load_config("configs/default.json")
+        cprint(
+            f"Starting export via Scheduled Query payload",
+            severity="INFO",
+            export_name=export_name,
+            source=resolved_uri,
+            run_time=run_time,
+        )
+        result = export_from_pattern(config, export_name, resolved_uri)
         return jsonify(result)
 
     except Exception as e:
