@@ -69,7 +69,6 @@ jobs:
           gcloud eventarc triggers update boxout-sftp-export-trigger \
             --location=${{ env.REGION }} \
             --service-account=boxout-sftp-export@${{ env.PROJECT_ID }}.iam.gserviceaccount.com \
-            --transport-topic=projects/${{ env.PROJECT_ID }}/topics/boxout-sftp-export-triggers \
             --destination-run-service=${{ env.SERVICE_NAME }} \
             --destination-run-region=${{ env.REGION }} \
             --destination-run-path="/" \
