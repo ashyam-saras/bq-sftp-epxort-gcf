@@ -92,6 +92,9 @@ def export_from_pattern(config: Dict[str, Any], export_name: str, resolved_patte
 
     sftp_config = {**config["sftp"], "directory": str(PurePosixPath(config["sftp"]["directory"]))}
 
+    # SFTP credentials check (fail fast before any GCS operations)
+    check_sftp_credentials(sftp_config)
+
     storage_client = storage.Client()
 
     # Decide if it is a pattern (contains *) or a plain prefix
@@ -112,9 +115,6 @@ def export_from_pattern(config: Dict[str, Any], export_name: str, resolved_patte
         total_mb=f"{total_bytes/(1024*1024):.2f}",
         source=resolved_pattern_or_prefix,
     )
-
-    # SFTP credentials check
-    check_sftp_credentials(sftp_config)
 
     # Prepare mappings and upload
     file_mappings = []
