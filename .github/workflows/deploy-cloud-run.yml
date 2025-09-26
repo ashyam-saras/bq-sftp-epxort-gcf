@@ -60,16 +60,30 @@ jobs:
         timeout: 900s
         flags: --no-allow-unauthenticated --min-instances=0 --max-instances=10 --concurrency=1 --memory=1Gi --cpu=1
         
-    - name: Create Pub/Sub Trigger
+    - name: Create or Update Pub/Sub Trigger
       run: |
-        gcloud eventarc triggers create boxout-sftp-export-trigger \
-          --location=${{ env.REGION }} \
-          --service-account=boxout-sftp-export@${{ env.PROJECT_ID }}.iam.gserviceaccount.com \
-          --transport-topic=projects/${{ env.PROJECT_ID }}/topics/boxout-sftp-export-triggers \
-          --destination-run-service=${{ env.SERVICE_NAME }} \
-          --destination-run-region=${{ env.REGION }} \
-          --destination-run-path="/" \
-          --event-filters="type=google.cloud.pubsub.topic.v1.messagePublished"
+        # Check if trigger exists
+        if gcloud eventarc triggers describe boxout-sftp-export-trigger --location=${{ env.REGION }} --quiet 2>/dev/null; then
+          echo "Trigger already exists, updating..."
+          gcloud eventarc triggers update boxout-sftp-export-trigger \
+            --location=${{ env.REGION }} \
+            --service-account=boxout-sftp-export@${{ env.PROJECT_ID }}.iam.gserviceaccount.com \
+            --transport-topic=projects/${{ env.PROJECT_ID }}/topics/boxout-sftp-export-triggers \
+            --destination-run-service=${{ env.SERVICE_NAME }} \
+            --destination-run-region=${{ env.REGION }} \
+            --destination-run-path="/" \
+            --event-filters="type=google.cloud.pubsub.topic.v1.messagePublished"
+        else
+          echo "Creating new trigger..."
+          gcloud eventarc triggers create boxout-sftp-export-trigger \
+            --location=${{ env.REGION }} \
+            --service-account=boxout-sftp-export@${{ env.PROJECT_ID }}.iam.gserviceaccount.com \
+            --transport-topic=projects/${{ env.PROJECT_ID }}/topics/boxout-sftp-export-triggers \
+            --destination-run-service=${{ env.SERVICE_NAME }} \
+            --destination-run-region=${{ env.REGION }} \
+            --destination-run-path="/" \
+            --event-filters="type=google.cloud.pubsub.topic.v1.messagePublished"
+        fi
         
     - name: Show Service URL
       run: echo "Service URL ${{ steps.deploy.outputs.url }}"
