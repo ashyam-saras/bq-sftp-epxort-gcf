@@ -74,7 +74,7 @@ def handle_request():
             run_time=run_time,
         )
         result = export_from_pattern(config, export_name, resolved_uri)
-        return jsonify(result)
+        return jsonify(result), 200
 
     except Exception as e:
         cprint(f"Error processing request: {str(e)}", severity="ERROR")
@@ -84,9 +84,4 @@ def handle_request():
 @app.route("/health", methods=["GET"])
 def health_check():
     """Health check endpoint for Cloud Run"""
-    return jsonify({"status": "healthy", "timestamp": datetime.datetime.now().isoformat()})
-
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host="0.0.0.0", port=port, debug=False)
+    return jsonify({"status": "healthy", "timestamp": datetime.datetime.now().isoformat()}), 200
