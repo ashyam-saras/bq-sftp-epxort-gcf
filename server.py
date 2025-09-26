@@ -4,6 +4,7 @@ import json
 import os
 import re
 
+import requests
 from flask import Flask, jsonify, request
 
 from src.config import load_config
@@ -11,6 +12,55 @@ from src.helpers import cprint
 from src.main import export_from_pattern
 
 app = Flask(__name__)
+
+
+def send_slack_notification(export_name: str, result: dict):
+    """Send Slack notification for completed export."""
+    slack_webhook_url = os.getenv("SLACK_WEBHOOK_URL")
+    if not slack_webhook_url:
+        cprint("No SLACK_WEBHOOK_URL configured, skipping notification", severity="WARNING")
+        return
+
+    try:
+        # Format the destination path for display
+        destination = result.get("destination", "Unknown")
+        if destination.endswith("/*"):
+            destination = destination[:-2] + " (multiple files)"
+
+        # Create the Slack message
+        message = {
+            "text": f"📊 *Export Complete: {export_name}*",
+            "blocks": [
+                {"type": "header", "text": {"type": "plain_text", "text": f"📊 Export Complete: {export_name}"}},
+                {
+                    "type": "section",
+                    "fields": [
+                        {"type": "mrkdwn", "text": f"*Table:*\n{export_name}"},
+                        {"type": "mrkdwn", "text": f"*Files Transferred:*\n{result.get('files_transferred', 0)}"},
+                        {"type": "mrkdwn", "text": f"*Destination:*\n{destination}"},
+                        {"type": "mrkdwn", "text": f"*Size:*\n{result.get('total_mb', 0):.2f} MB"},
+                        {"type": "mrkdwn", "text": f"*Duration:*\n{result.get('total_time_seconds', 0):.1f}s"},
+                        {"type": "mrkdwn", "text": f"*Source:*\n{result.get('source', 'Unknown')}"},
+                    ],
+                },
+                {
+                    "type": "context",
+                    "elements": [
+                        {
+                            "type": "mrkdwn",
+                            "text": f"✅ Export completed successfully at {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')}",
+                        }
+                    ],
+                },
+            ],
+        }
+
+        response = requests.post(slack_webhook_url, json=message, timeout=10)
+        response.raise_for_status()
+        cprint("Slack notification sent successfully", severity="INFO")
+
+    except Exception as e:
+        cprint(f"Failed to send Slack notification: {str(e)}", severity="ERROR")
 
 
 @app.route("/", methods=["POST"])
@@ -74,6 +124,11 @@ def handle_request():
             run_time=run_time,
         )
         result = export_from_pattern(config, export_name, resolved_uri)
+
+        # Send Slack notification if export was successful
+        if result.get("status") == "success":
+            send_slack_notification(export_name, result)
+
         return jsonify(result), 200
 
     except Exception as e:

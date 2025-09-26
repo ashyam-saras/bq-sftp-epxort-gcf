@@ -4,4 +4,5 @@ google-cloud-bigquery==3.30.0
 google-cloud-storage==3.1.0
 python-dotenv==1.0.1
 pysftp==0.2.9
+requests==2.31.0
 tenacity==9.0.0

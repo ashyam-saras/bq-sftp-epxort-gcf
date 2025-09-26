@@ -57,6 +57,7 @@ jobs:
           GCS_BUCKET=${{ vars.GCS_BUCKET }}
           EXPORT_METADATA_TABLE=${{ vars.EXPORT_METADATA_TABLE }}
           SFTP_DIRECTORY=${{ vars.SFTP_DIRECTORY }}
+          SLACK_WEBHOOK_URL=${{ vars.SLACK_WEBHOOK_URL }}
         timeout: 900s
         flags: --no-allow-unauthenticated --min-instances=0 --max-instances=10 --concurrency=1 --memory=1Gi --cpu=1
         
@@ -84,6 +85,54 @@ jobs:
             --destination-run-path="/" \
             --event-filters="type=google.cloud.pubsub.topic.v1.messagePublished"
         fi
+        
+    - name: Send Slack Notification
+      if: success()
+      run: |
+        curl -X POST -H 'Content-type: application/json' \
+          --data '{
+            "text": "🚀 *BigQuery SFTP Export Deployment Complete*",
+            "blocks": [
+              {
+                "type": "header",
+                "text": {
+                  "type": "plain_text",
+                  "text": "🚀 BigQuery SFTP Export Deployment Complete"
+                }
+              },
+              {
+                "type": "section",
+                "fields": [
+                  {
+                    "type": "mrkdwn",
+                    "text": "*Service:*\n${{ env.SERVICE_NAME }}"
+                  },
+                  {
+                    "type": "mrkdwn",
+                    "text": "*Region:*\n${{ env.REGION }}"
+                  },
+                  {
+                    "type": "mrkdwn",
+                    "text": "*Trigger Topic:*\nboxout-sftp-export-triggers"
+                  },
+                  {
+                    "type": "mrkdwn",
+                    "text": "*Service URL:*\n${{ steps.deploy.outputs.url }}"
+                  }
+                ]
+              },
+              {
+                "type": "context",
+                "elements": [
+                  {
+                    "type": "mrkdwn",
+                    "text": "✅ Cloud Run service deployed and Pub/Sub trigger configured"
+                  }
+                ]
+              }
+            ]
+          }' \
+          ${{ vars.SLACK_WEBHOOK_URL }}
         
     - name: Show Service URL
       run: echo "Service URL ${{ steps.deploy.outputs.url }}"
