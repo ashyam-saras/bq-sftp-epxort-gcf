@@ -60,5 +60,16 @@ jobs:
         timeout: 900s
         flags: --no-allow-unauthenticated --min-instances=0 --max-instances=10 --concurrency=1 --memory=1Gi --cpu=1
         
+    - name: Create Pub/Sub Trigger
+      run: |
+        gcloud eventarc triggers create boxout-sftp-export-trigger \
+          --location=${{ env.REGION }} \
+          --destination-run-service=${{ env.SERVICE_NAME }} \
+          --destination-run-region=${{ env.REGION }} \
+          --event-filters="type=google.cloud.pubsub.topic.v1.messagePublished" \
+          --event-filters="topic=boxout-sftp-export-triggers" \
+          --service-account=boxout-sftp-export@${{ env.PROJECT_ID }}.iam.gserviceaccount.com \
+          --quiet || echo "Trigger may already exist"
+        
     - name: Show Service URL
       run: echo "Service URL ${{ steps.deploy.outputs.url }}"
