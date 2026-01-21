@@ -127,7 +127,7 @@ def upload_from_gcs_parallel(
     sftp_config: Dict[str, Any],
     file_mappings: List[Tuple[str, str]],
     max_workers: int = None,
-) -> int:
+) -> List[str]:
     """
     Upload multiple files from GCS to SFTP server in parallel using a simplified approach.
     Each worker thread creates its own SFTP connection.
@@ -138,18 +138,18 @@ def upload_from_gcs_parallel(
         max_workers: Maximum number of concurrent workers
 
     Returns:
-        int: Number of files successfully transferred
+        List[str]: List of successfully transferred remote filenames
     """
     if not file_mappings:
         cprint("No files to transfer", severity="WARNING")
-        return 0
+        return []
 
     # Set default thread count if not specified
     if max_workers is None:
         max_workers = min(20, (os.cpu_count() or 1) * 4)  # Cap at reasonable limit
 
     total_files = len(file_mappings)
-    successful = 0
+    successful_files = []
     failed = 0
     start_time = time.time()
 
@@ -174,7 +174,7 @@ def upload_from_gcs_parallel(
                 severity="INFO",
                 time_taken=f"{file_time:.2f}s",
             )
-            return True
+            return remote_filename  # Return filename on success
 
         except Exception as e:
             file_time = time.time() - file_start
@@ -183,7 +183,7 @@ def upload_from_gcs_parallel(
                 severity="ERROR",
                 time_taken=f"{file_time:.2f}s",
             )
-            return False
+            return None  # Return None on failure
 
     try:
         # Process files with ThreadPoolExecutor
@@ -195,27 +195,28 @@ def upload_from_gcs_parallel(
 
             # Process results as they complete
             for future in concurrent.futures.as_completed(future_to_file):
-                if future.result():
-                    successful += 1
+                result = future.result()
+                if result is not None:
+                    successful_files.append(result)
                 else:
                     failed += 1
 
                 # Report progress
-                completed = successful + failed
+                completed = len(successful_files) + failed
                 cprint(
-                    f"Progress: {completed}/{total_files} files processed ({successful} successful, {failed} failed)",
+                    f"Progress: {completed}/{total_files} files processed ({len(successful_files)} successful, {failed} failed)",
                     severity="DEBUG",
                 )
 
         total_time = time.time() - start_time
         cprint(
-            f"Parallel upload complete: {successful}/{total_files} files transferred",
+            f"Parallel upload complete: {len(successful_files)}/{total_files} files transferred",
             severity="INFO",
             failed=failed,
             total_time=f"{total_time:.2f}s",
         )
 
-        return successful
+        return successful_files
 
     except Exception as e:
         cprint(f"Parallel upload operation failed: {str(e)}", severity="ERROR")
@@ -459,6 +460,252 @@ def list_sftp_files(sftp_config: Dict[str, Any], directory: str) -> Dict[str, Di
         raise
 
 
+def list_sftp_directory(sftp_config: Dict[str, Any], directory: str, long_format: bool = False) -> List[Dict[str, Any]]:
+    """
+    List all entries (files and directories) in an SFTP directory.
+
+    Args:
+        sftp_config: SFTP connection configuration
+        directory: Remote directory to list
+        long_format: Include detailed metadata
+
+    Returns:
+        List of entries with metadata
+    """
+    import stat
+    from datetime import datetime
+
+    host = sftp_config["host"]
+    port = int(sftp_config.get("port", 22))
+    username = sftp_config["username"]
+    password = sftp_config["password"]
+
+    try:
+        transport, sftp = create_sftp_connection(host, port, username, password)
+
+        entries = []
+        try:
+            for attr in sftp.listdir_attr(directory):
+                is_dir = stat.S_ISDIR(attr.st_mode) if attr.st_mode else False
+                entry = {
+                    "name": attr.filename,
+                    "is_dir": is_dir,
+                    "size": attr.st_size,
+                    "mtime": datetime.fromtimestamp(attr.st_mtime) if attr.st_mtime else None,
+                    "mode": attr.st_mode,
+                }
+                entries.append(entry)
+        except FileNotFoundError:
+            raise FileNotFoundError(f"Directory not found: {directory}")
+
+        sftp.close()
+        transport.close()
+
+        # Sort: directories first, then alphabetically
+        entries.sort(key=lambda x: (not x["is_dir"], x["name"].lower()))
+        return entries
+
+    except Exception as e:
+        raise
+
+
+def list_sftp_tree(sftp_config: Dict[str, Any], directory: str, max_depth: int = 3) -> None:
+    """
+    Print a tree view of SFTP directory structure.
+
+    Args:
+        sftp_config: SFTP connection configuration
+        directory: Root directory to start from
+        max_depth: Maximum depth to traverse
+    """
+    import stat
+
+    host = sftp_config["host"]
+    port = int(sftp_config.get("port", 22))
+    username = sftp_config["username"]
+    password = sftp_config["password"]
+
+    transport, sftp = create_sftp_connection(host, port, username, password)
+
+    def _print_tree(path: str, prefix: str = "", depth: int = 0):
+        if depth > max_depth:
+            return
+
+        try:
+            entries = sftp.listdir_attr(path)
+        except (PermissionError, FileNotFoundError):
+            return
+
+        # Sort: directories first, then alphabetically
+        entries.sort(key=lambda x: (not stat.S_ISDIR(x.st_mode) if x.st_mode else True, x.filename.lower()))
+
+        for i, attr in enumerate(entries):
+            is_last = i == len(entries) - 1
+            connector = "└── " if is_last else "├── "
+            is_dir = stat.S_ISDIR(attr.st_mode) if attr.st_mode else False
+
+            if is_dir:
+                print(f"{prefix}{connector}{attr.filename}/")
+                new_prefix = prefix + ("    " if is_last else "│   ")
+                new_path = f"{path.rstrip('/')}/{attr.filename}"
+                _print_tree(new_path, new_prefix, depth + 1)
+            else:
+                size_str = _format_size(attr.st_size) if attr.st_size else "0B"
+                print(f"{prefix}{connector}{attr.filename} ({size_str})")
+
+    print(f"{directory}")
+    _print_tree(directory)
+
+    sftp.close()
+    transport.close()
+
+
+def _format_size(size: int) -> str:
+    """Format file size in human-readable format."""
+    for unit in ["B", "KB", "MB", "GB", "TB"]:
+        if size < 1024:
+            return f"{size:.1f}{unit}" if unit != "B" else f"{size}{unit}"
+        size /= 1024
+    return f"{size:.1f}PB"
+
+
+def delete_sftp_path(sftp_config: Dict[str, Any], path: str, recursive: bool = False) -> Tuple[int, int]:
+    """
+    Delete a file or directory on SFTP server.
+
+    Args:
+        sftp_config: SFTP connection configuration
+        path: Path to file or directory to delete
+        recursive: If True, delete directory contents recursively
+
+    Returns:
+        Tuple of (files_deleted, dirs_deleted)
+    """
+    import stat
+
+    host = sftp_config["host"]
+    port = int(sftp_config.get("port", 22))
+    username = sftp_config["username"]
+    password = sftp_config["password"]
+
+    transport, sftp = create_sftp_connection(host, port, username, password)
+
+    files_deleted = 0
+    dirs_deleted = 0
+
+    def _delete_recursive(target_path: str) -> Tuple[int, int]:
+        """Recursively delete a path."""
+        nonlocal files_deleted, dirs_deleted
+
+        try:
+            attr = sftp.stat(target_path)
+        except FileNotFoundError:
+            raise FileNotFoundError(f"Path not found: {target_path}")
+
+        is_dir = stat.S_ISDIR(attr.st_mode) if attr.st_mode else False
+
+        if is_dir:
+            if not recursive:
+                raise IsADirectoryError(f"Cannot delete directory without --recursive: {target_path}")
+
+            # Delete contents first
+            for entry in sftp.listdir_attr(target_path):
+                entry_path = f"{target_path.rstrip('/')}/{entry.filename}"
+                entry_is_dir = stat.S_ISDIR(entry.st_mode) if entry.st_mode else False
+
+                if entry_is_dir:
+                    _delete_recursive(entry_path)
+                else:
+                    sftp.remove(entry_path)
+                    files_deleted += 1
+                    print(f"  Deleted file: {entry_path}")
+
+            # Delete the directory itself
+            sftp.rmdir(target_path)
+            dirs_deleted += 1
+            print(f"  Deleted directory: {target_path}")
+        else:
+            sftp.remove(target_path)
+            files_deleted += 1
+            print(f"  Deleted file: {target_path}")
+
+        return files_deleted, dirs_deleted
+
+    try:
+        _delete_recursive(path)
+    finally:
+        sftp.close()
+        transport.close()
+
+    return files_deleted, dirs_deleted
+
+
+def clear_sftp_directory(sftp_config: Dict[str, Any], directory: str) -> Tuple[int, int]:
+    """
+    Delete all contents of a directory without deleting the directory itself.
+
+    Args:
+        sftp_config: SFTP connection configuration
+        directory: Directory to clear
+
+    Returns:
+        Tuple of (files_deleted, dirs_deleted)
+    """
+    import stat
+
+    host = sftp_config["host"]
+    port = int(sftp_config.get("port", 22))
+    username = sftp_config["username"]
+    password = sftp_config["password"]
+
+    transport, sftp = create_sftp_connection(host, port, username, password)
+
+    files_deleted = 0
+    dirs_deleted = 0
+
+    def _delete_recursive(target_path: str):
+        """Recursively delete a path."""
+        nonlocal files_deleted, dirs_deleted
+
+        attr = sftp.stat(target_path)
+        is_dir = stat.S_ISDIR(attr.st_mode) if attr.st_mode else False
+
+        if is_dir:
+            # Delete contents first
+            for entry in sftp.listdir_attr(target_path):
+                entry_path = f"{target_path.rstrip('/')}/{entry.filename}"
+                _delete_recursive(entry_path)
+
+            # Delete the directory itself
+            sftp.rmdir(target_path)
+            dirs_deleted += 1
+            print(f"  Deleted directory: {target_path}")
+        else:
+            sftp.remove(target_path)
+            files_deleted += 1
+            print(f"  Deleted file: {target_path}")
+
+    try:
+        # Check directory exists
+        try:
+            attr = sftp.stat(directory)
+            if not stat.S_ISDIR(attr.st_mode):
+                raise NotADirectoryError(f"Not a directory: {directory}")
+        except FileNotFoundError:
+            raise FileNotFoundError(f"Directory not found: {directory}")
+
+        # Delete all contents
+        for entry in sftp.listdir_attr(directory):
+            entry_path = f"{directory.rstrip('/')}/{entry.filename}"
+            _delete_recursive(entry_path)
+
+    finally:
+        sftp.close()
+        transport.close()
+
+    return files_deleted, dirs_deleted
+
+
 def main():
     import argparse
 
@@ -489,6 +736,28 @@ def main():
     add_sftp_args(upload_parser)
     upload_parser.add_argument("--gcs-uri", required=True, help="GCS URI of file to upload (gs://bucket/path)")
     upload_parser.add_argument("--remote-file", required=True, help="Filename to use on SFTP server")
+
+    # Create 'ls' command parser
+    ls_parser = subparsers.add_parser("ls", help="List files and directories")
+    add_sftp_args(ls_parser)
+    ls_parser.add_argument("-l", "--long", action="store_true", help="Use long listing format")
+
+    # Create 'tree' command parser
+    tree_parser = subparsers.add_parser("tree", help="Show directory tree")
+    add_sftp_args(tree_parser)
+    tree_parser.add_argument("--depth", type=int, default=3, help="Maximum depth to traverse (default: 3)")
+
+    # Create 'rm' command parser
+    rm_parser = subparsers.add_parser("rm", help="Delete file or directory")
+    add_sftp_args(rm_parser)
+    rm_parser.add_argument("path", help="Path to file or directory to delete")
+    rm_parser.add_argument("-r", "--recursive", action="store_true", help="Delete directories recursively")
+    rm_parser.add_argument("-f", "--force", action="store_true", help="Skip confirmation prompt")
+
+    # Create 'clear' command parser
+    clear_parser = subparsers.add_parser("clear", help="Delete all contents of a directory (keeps directory)")
+    add_sftp_args(clear_parser)
+    clear_parser.add_argument("-f", "--force", action="store_true", help="Skip confirmation prompt")
 
     args = parser.parse_args()
 
@@ -523,6 +792,103 @@ def main():
             print("✅ Upload successful!")
         except Exception as e:
             print(f"❌ Upload failed: {str(e)}")
+            exit(1)
+
+    elif args.command == "ls":
+        try:
+            entries = list_sftp_directory(sftp_config, directory, long_format=args.long)
+            if not entries:
+                print(f"Directory is empty: {directory}")
+            elif args.long:
+                # Long format: permissions, size, date, name
+                print(f"{'Type':<5} {'Size':>10}  {'Modified':<20} Name")
+                print("-" * 60)
+                for entry in entries:
+                    type_str = "dir" if entry["is_dir"] else "file"
+                    size_str = _format_size(entry["size"]) if entry["size"] else "-"
+                    mtime_str = entry["mtime"].strftime("%Y-%m-%d %H:%M:%S") if entry["mtime"] else "-"
+                    name = entry["name"] + "/" if entry["is_dir"] else entry["name"]
+                    print(f"{type_str:<5} {size_str:>10}  {mtime_str:<20} {name}")
+                print(f"\nTotal: {len(entries)} entries")
+            else:
+                # Short format: just names
+                for entry in entries:
+                    name = entry["name"] + "/" if entry["is_dir"] else entry["name"]
+                    print(name)
+        except FileNotFoundError as e:
+            print(f"❌ {str(e)}")
+            exit(1)
+        except Exception as e:
+            print(f"❌ Failed to list directory: {str(e)}")
+            exit(1)
+
+    elif args.command == "tree":
+        try:
+            print(f"Directory tree for {host}:{port}")
+            list_sftp_tree(sftp_config, directory, max_depth=args.depth)
+        except Exception as e:
+            print(f"❌ Failed to show tree: {str(e)}")
+            exit(1)
+
+    elif args.command == "rm":
+        target_path = args.path
+        # Confirmation prompt unless --force
+        if not args.force:
+            if args.recursive:
+                confirm = input(f"Delete '{target_path}' and all contents? [y/N]: ")
+            else:
+                confirm = input(f"Delete '{target_path}'? [y/N]: ")
+            if confirm.lower() != "y":
+                print("Cancelled.")
+                exit(0)
+
+        try:
+            print(f"Deleting {target_path}...")
+            files, dirs = delete_sftp_path(sftp_config, target_path, recursive=args.recursive)
+            print(f"✅ Deleted {files} file(s) and {dirs} directory(ies)")
+        except FileNotFoundError as e:
+            print(f"❌ {str(e)}")
+            exit(1)
+        except IsADirectoryError as e:
+            print(f"❌ {str(e)}")
+            print("Use --recursive (-r) to delete directories")
+            exit(1)
+        except Exception as e:
+            print(f"❌ Delete failed: {str(e)}")
+            exit(1)
+
+    elif args.command == "clear":
+        # Confirmation prompt unless --force
+        if not args.force:
+            # Show what will be deleted first
+            try:
+                entries = list_sftp_directory(sftp_config, directory)
+                if not entries:
+                    print(f"Directory is already empty: {directory}")
+                    exit(0)
+                print(f"Contents of {directory}:")
+                for entry in entries[:10]:  # Show first 10
+                    name = entry["name"] + "/" if entry["is_dir"] else entry["name"]
+                    print(f"  {name}")
+                if len(entries) > 10:
+                    print(f"  ... and {len(entries) - 10} more")
+                confirm = input(f"\nDelete ALL {len(entries)} items in '{directory}'? [y/N]: ")
+                if confirm.lower() != "y":
+                    print("Cancelled.")
+                    exit(0)
+            except Exception as e:
+                print(f"❌ Failed to list directory: {str(e)}")
+                exit(1)
+
+        try:
+            print(f"Clearing {directory}...")
+            files, dirs = clear_sftp_directory(sftp_config, directory)
+            print(f"✅ Deleted {files} file(s) and {dirs} directory(ies)")
+        except FileNotFoundError as e:
+            print(f"❌ {str(e)}")
+            exit(1)
+        except Exception as e:
+            print(f"❌ Clear failed: {str(e)}")
             exit(1)
 
 
