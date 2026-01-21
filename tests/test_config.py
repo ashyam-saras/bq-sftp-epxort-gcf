@@ -20,30 +20,33 @@ def test_load_config_from_file():
             "directory": "/uploads",
         },
         "gcs": {"bucket": "test-bucket"},
-        "metadata": {"export_metadata_table": "project.dataset.table"},
-        "exports": {"test_export": {"source_table": "project.dataset.source", "export_type": "full"}},
+        "exports": {"test_export": {"query": "SELECT * FROM table"}},
     }
 
     m = mock_open(read_data=json.dumps(config_data))
     with patch("builtins.open", m):
         with patch("os.path.exists", return_value=True):
             result = load_config("config.json")
-            assert result == config_data
+            assert result["sftp"]["host"] == "sftp.example.com"
+            assert result["exports"]["test_export"]["query"] == "SELECT * FROM table"
 
 
 def test_load_config_from_env_json():
     """Test loading config from EXPORT_CONFIG environment variable."""
     config_data = {
-        "sftp": {"host": "sftp.example.com"},
+        "sftp": {
+            "host": "sftp.example.com",
+            "username": "user",
+            "password": "pass",
+            "directory": "/uploads",
+        },
         "gcs": {"bucket": "test-bucket"},
-        "exports": {"test": {"source_table": "project.dataset.table"}},
     }
 
-    with patch.dict(os.environ, {"EXPORT_CONFIG": json.dumps(config_data)}):
+    with patch.dict(os.environ, {"EXPORT_CONFIG": json.dumps(config_data)}, clear=True):
         result = load_config()
         assert result["sftp"]["host"] == "sftp.example.com"
         assert result["gcs"]["bucket"] == "test-bucket"
-        assert result["exports"]["test"]["source_table"] == "project.dataset.table"
 
 
 def test_load_config_from_env_vars():
@@ -55,7 +58,6 @@ def test_load_config_from_env_vars():
         "SFTP_PASSWORD": "pass",
         "SFTP_DIRECTORY": "/test",
         "GCS_BUCKET": "test-bucket",
-        "EXPORT_METADATA_TABLE": "project.dataset.metadata",
     }
 
     with patch.dict(os.environ, env_vars, clear=True):
@@ -66,56 +68,47 @@ def test_load_config_from_env_vars():
         assert config["sftp"]["password"] == "pass"
         assert config["sftp"]["directory"] == "/test"
         assert config["gcs"]["bucket"] == "test-bucket"
-        assert config["metadata"]["export_metadata_table"] == "project.dataset.metadata"
 
 
-def test_validate_config_missing_exports():
-    """Test validation fails when exports section is missing."""
-    config = {"sftp": {"host": "test"}, "gcs": {"bucket": "test"}}
+def test_validate_config_missing_sftp():
+    """Test validation fails when sftp section is missing."""
+    config = {"gcs": {"bucket": "test"}}
 
-    # Use patch to return our test config from open() call
     with patch("os.path.exists", return_value=True):
         with patch("builtins.open", mock_open(read_data=json.dumps(config))):
-            with pytest.raises(ConfigError, match="Missing or invalid exports section in config"):
+            with pytest.raises(ConfigError, match="Missing 'sftp' configuration section"):
                 load_config("fake_config.json")
 
 
-def test_validate_config_missing_source_table():
-    """Test validation fails when source_table is missing in export config."""
+def test_validate_config_missing_sftp_fields():
+    """Test validation fails when required SFTP fields are missing."""
     config = {
-        "exports": {
-            "test_export": {
-                # Missing source_table
-                "export_type": "full"
-            }
-        }
+        "sftp": {"host": "test.com"},  # Missing username, password, directory
+        "gcs": {"bucket": "test"},
     }
 
-    # Use patch to return our test config from open() call
     with patch("os.path.exists", return_value=True):
         with patch("builtins.open", mock_open(read_data=json.dumps(config))):
-            with pytest.raises(ConfigError, match="Missing source_table in export config: test_export"):
+            with pytest.raises(ConfigError, match="Missing required SFTP configuration"):
                 load_config("fake_config.json")
 
 
-def test_validate_config_default_values():
-    """Test that default values are set correctly during validation."""
+def test_validate_config_export_missing_query():
+    """Test validation fails when export is missing required query field."""
     config = {
-        "exports": {
-            "test_export": {
-                "source_table": "project.dataset.table",
-                "date_column": "timestamp",  # Has date_column but no days_lookback
-            }
-        }
+        "sftp": {
+            "host": "test.com",
+            "username": "user",
+            "password": "pass",
+            "directory": "/test",
+        },
+        "exports": {"test_export": {"name": "test"}},  # Missing query
     }
 
-    # Use patch to return our test config from open() call
     with patch("os.path.exists", return_value=True):
         with patch("builtins.open", mock_open(read_data=json.dumps(config))):
-            with patch.dict(os.environ, {"SFTP_HOST": "test.com"}):
-                result = load_config("fake_config.json")
-                assert result["exports"]["test_export"]["days_lookback"] == 7
-                assert result["exports"]["test_export"]["export_type"] == "full"
+            with pytest.raises(ConfigError, match="missing required 'query' field"):
+                load_config("fake_config.json")
 
 
 def test_load_config_invalid_json_file():
@@ -128,6 +121,30 @@ def test_load_config_invalid_json_file():
 
 def test_load_config_invalid_env_json():
     """Test handling of invalid JSON in EXPORT_CONFIG environment variable."""
-    with patch.dict(os.environ, {"EXPORT_CONFIG": "invalid json"}):
+    with patch.dict(os.environ, {"EXPORT_CONFIG": "invalid json"}, clear=True):
         with pytest.raises(ConfigError, match="Invalid JSON in EXPORT_CONFIG environment variable"):
             load_config()
+
+
+def test_load_config_no_config_found():
+    """Test error when no configuration source is available."""
+    with patch.dict(os.environ, {}, clear=True):
+        with pytest.raises(ConfigError, match="No configuration found"):
+            load_config()
+
+
+def test_gcs_expiration_days_default():
+    """Test that GCS expiration_days defaults to 30."""
+    config = {
+        "sftp": {
+            "host": "test.com",
+            "username": "user",
+            "password": "pass",
+            "directory": "/test",
+        },
+    }
+
+    with patch("os.path.exists", return_value=True):
+        with patch("builtins.open", mock_open(read_data=json.dumps(config))):
+            result = load_config("fake_config.json")
+            assert result["gcs"]["expiration_days"] == 30
