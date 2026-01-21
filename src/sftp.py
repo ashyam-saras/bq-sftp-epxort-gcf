@@ -361,7 +361,6 @@ def check_sftp_credentials(sftp_config: Dict[str, Any], timeout: int = 10) -> bo
         host=host,
         port=port,
         username=username,
-        password=password,
         directory=remote_path,
     )
 

@@ -38,7 +38,7 @@ def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
                     cprint(f"Loaded config from file", severity="INFO", path=config_path)
             except Exception as e:
                 raise ConfigError(f"Failed to load config file '{config_path}': {str(e)}")
-    else:
+        else:
             raise ConfigError(f"Config file not found: {config_path}")
     
     # Priority 2: EXPORT_CONFIG environment variable (full JSON)

@@ -33,31 +33,30 @@ def verify_gcs_sftp_sync(
         export_name=export_name,
         gcs_path=gcs_path,
     )
-    
+
     # Get files from GCS
     storage_client = storage.Client()
     gcs_blobs = _list_gcs_files(storage_client, gcs_path)
     gcs_files: Set[str] = {blob.name.split("/")[-1] for blob in gcs_blobs}
-    
+
     # Get file sizes from GCS for comparison
     gcs_file_sizes = {
         blob.name.split("/")[-1]: blob.size
         for blob in gcs_blobs
     }
-    
+
     # Get files from SFTP
     sftp_directory = sftp_config["directory"]
     sftp_file_info = list_sftp_files(sftp_config, sftp_directory)
     sftp_files: Set[str] = set(sftp_file_info.keys())
-    
+
     # Filter SFTP files to only those that match GCS filenames
     # (SFTP directory may contain other files)
     relevant_sftp_files = sftp_files.intersection(gcs_files)
-    
+
     # Calculate differences
     missing_on_sftp = gcs_files - sftp_files
-    extra_on_sftp = relevant_sftp_files - gcs_files  # Should be empty given intersection
-    
+
     # Check file sizes match
     size_mismatches = []
     for filename in relevant_sftp_files:
@@ -69,9 +68,11 @@ def verify_gcs_sftp_sync(
                 "gcs_size": gcs_size,
                 "sftp_size": sftp_size,
             })
-    
-    in_sync = len(missing_on_sftp) == 0 and len(size_mismatches) == 0
-    
+
+    # Require at least one file in GCS - empty GCS indicates failed export
+    has_files = len(gcs_files) > 0
+    in_sync = has_files and len(missing_on_sftp) == 0 and len(size_mismatches) == 0
+
     result = {
         "status": "success",
         "in_sync": in_sync,
@@ -83,9 +84,17 @@ def verify_gcs_sftp_sync(
         "sftp_files": sorted(list(relevant_sftp_files)),
         "missing_on_sftp": sorted(list(missing_on_sftp)),
         "size_mismatches": size_mismatches,
+        "no_files_found": not has_files,
     }
-    
-    if in_sync:
+
+    if not has_files:
+        cprint(
+            f"Verification FAILED for '{export_name}': no files found in GCS",
+            severity="ERROR",
+            export_name=export_name,
+            gcs_path=gcs_path,
+        )
+    elif in_sync:
         cprint(
             f"Verification passed for '{export_name}'",
             severity="INFO",
@@ -100,5 +109,5 @@ def verify_gcs_sftp_sync(
             missing_count=len(missing_on_sftp),
             size_mismatch_count=len(size_mismatches),
         )
-    
+
     return result

@@ -64,7 +64,7 @@ jobs:
             CONFIG_PATH=configs/exports.json
           timeout: 2400s
           flags: >-
-            --no-allow-unauthenticated
+            --allow-unauthenticated
             --min-instances=0
             --max-instances=10
             --concurrency=5
