@@ -168,7 +168,7 @@ def build_export_query(
 
 
 @dag(
-    dag_id="sftp_export",
+    dag_id="boxout_sftp_export",
     description="Export BigQuery data to SFTP via GCS",
     schedule="0 6 * * *",
     start_date=datetime(2025, 1, 1),
