@@ -1,7 +1,7 @@
 {
     "gcs_bucket": "boxout-sftp-transfer",
     "gcs_expiration_days": 30,
-    "cloud_run_url": "https://bq-sftp-export-xxxxx.run.app",
+    "cloud_run_url": "https://https://boxout-bq-sftp-export-165971167981.us-central1.run.app",
     "sftp": {
         "host": "sftp.boxouthealth.com",
         "port": 22,
