@@ -173,6 +173,7 @@ def build_export_query(
     schedule="0 6 * * *",
     start_date=datetime(2025, 1, 1),
     max_active_runs=3,
+    catchup=False,
     default_args={
         "owner": "data-engineering",
         "retries": 2,
