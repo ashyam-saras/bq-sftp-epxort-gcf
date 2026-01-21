@@ -2,10 +2,11 @@ name: Deploy to Cloud Run
 
 on:
   push:
-    branches: [ main, optimizations ]
+    branches: [main]
     paths:
       - 'src/**'
-      - 'tests/**'
+      - 'server.py'
+      - 'configs/**'
       - 'requirements.txt'
       - 'Dockerfile'
       - '.github/workflows/deploy-cloud-run.yml'
@@ -14,124 +15,67 @@ on:
 env:
   PROJECT_ID: insightsprod
   SERVICE_NAME: boxout-bq-sftp-export
-  ARTIFACT_REPOSITORY: sftp-export
+  ARTIFACT_REPOSITORY: pulse-artifacts
   REGION: us-central1
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    
+
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-      
-    - name: Google Auth
-      uses: google-github-actions/auth@v2
-      with:
-        credentials_json: ${{ secrets.GCP_SA_KEY }}
-        
-    - name: Set up Cloud SDK
-      uses: google-github-actions/setup-gcloud@v2
-      with:
-        project_id: ${{ env.PROJECT_ID }}
-        
-    - name: Authorize Docker push
-      run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev
-      
-    - name: Build and push image to Google Container Registry
-      run: |
-        docker build --platform linux/amd64 -t ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.ARTIFACT_REPOSITORY }}/${{ env.SERVICE_NAME }}:${{ github.sha }} .
-        docker push ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.ARTIFACT_REPOSITORY }}/${{ env.SERVICE_NAME }}:${{ github.sha }}
-        
-    - name: Deploy to Cloud Run
-      id: deploy
-      uses: google-github-actions/deploy-cloudrun@v2
-      with:
-        service: ${{ env.SERVICE_NAME }}
-        region: ${{ env.REGION }}
-        image: ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.ARTIFACT_REPOSITORY }}/${{ env.SERVICE_NAME }}:${{ github.sha }}
-        env_vars: |
-          SFTP_HOST=${{ vars.SFTP_HOST }}
-          SFTP_USERNAME=${{ vars.SFTP_USERNAME }}
-          SFTP_PASSWORD=${{ secrets.SFTP_PASSWORD }}
-          GCS_BUCKET=${{ vars.GCS_BUCKET }}
-          EXPORT_METADATA_TABLE=${{ vars.EXPORT_METADATA_TABLE }}
-          SFTP_DIRECTORY=${{ vars.SFTP_DIRECTORY }}
-          SLACK_WEBHOOK_URL=${{ vars.SLACK_WEBHOOK_URL }}
-        timeout: 900s
-        flags: --no-allow-unauthenticated --min-instances=0 --max-instances=10 --concurrency=1 --memory=1Gi --cpu=1
-        
-    - name: Create or Update Pub/Sub Trigger
-      run: |
-        # Check if trigger exists
-        if gcloud eventarc triggers describe boxout-sftp-export-trigger --location=${{ env.REGION }} --quiet 2>/dev/null; then
-          echo "Trigger already exists, updating..."
-          gcloud eventarc triggers update boxout-sftp-export-trigger \
-            --location=${{ env.REGION }} \
-            --service-account=boxout-sftp-export@${{ env.PROJECT_ID }}.iam.gserviceaccount.com \
-            --destination-run-service=${{ env.SERVICE_NAME }} \
-            --destination-run-region=${{ env.REGION }} \
-            --destination-run-path="/" \
-            --event-filters="type=google.cloud.pubsub.topic.v1.messagePublished"
-        else
-          echo "Creating new trigger..."
-          gcloud eventarc triggers create boxout-sftp-export-trigger \
-            --location=${{ env.REGION }} \
-            --service-account=boxout-sftp-export@${{ env.PROJECT_ID }}.iam.gserviceaccount.com \
-            --transport-topic=projects/${{ env.PROJECT_ID }}/topics/boxout-sftp-export-triggers \
-            --destination-run-service=${{ env.SERVICE_NAME }} \
-            --destination-run-region=${{ env.REGION }} \
-            --destination-run-path="/" \
-            --event-filters="type=google.cloud.pubsub.topic.v1.messagePublished"
-        fi
-        
-    - name: Send Slack Notification
-      if: success()
-      run: |
-        curl -X POST -H 'Content-type: application/json' \
-          --data '{
-            "text": "🚀 *BigQuery SFTP Export Deployment Complete*",
-            "blocks": [
-              {
-                "type": "header",
-                "text": {
-                  "type": "plain_text",
-                  "text": "🚀 BigQuery SFTP Export Deployment Complete"
-                }
-              },
-              {
-                "type": "section",
-                "fields": [
-                  {
-                    "type": "mrkdwn",
-                    "text": "*Service:*\n${{ env.SERVICE_NAME }}"
-                  },
-                  {
-                    "type": "mrkdwn",
-                    "text": "*Region:*\n${{ env.REGION }}"
-                  },
-                  {
-                    "type": "mrkdwn",
-                    "text": "*Trigger Topic:*\nboxout-sftp-export-triggers"
-                  },
-                  {
-                    "type": "mrkdwn",
-                    "text": "*Service URL:*\n${{ steps.deploy.outputs.url }}"
-                  }
-                ]
-              },
-              {
-                "type": "context",
-                "elements": [
-                  {
-                    "type": "mrkdwn",
-                    "text": "✅ Cloud Run service deployed and Pub/Sub trigger configured"
-                  }
-                ]
-              }
-            ]
-          }' \
-          ${{ vars.SLACK_WEBHOOK_URL }}
-        
-    - name: Show Service URL
-      run: echo "Service URL ${{ steps.deploy.outputs.url }}"
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Google Auth
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+
+      - name: Authorize Docker push
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev
+
+      - name: Build and push image
+        run: |
+          docker build --platform linux/amd64 \
+            -t ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.ARTIFACT_REPOSITORY }}/${{ env.SERVICE_NAME }}:${{ github.sha }} \
+            -t ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.ARTIFACT_REPOSITORY }}/${{ env.SERVICE_NAME }}:latest \
+            .
+          docker push ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.ARTIFACT_REPOSITORY }}/${{ env.SERVICE_NAME }}:${{ github.sha }}
+          docker push ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.ARTIFACT_REPOSITORY }}/${{ env.SERVICE_NAME }}:latest
+
+      - name: Deploy to Cloud Run
+        id: deploy
+        uses: google-github-actions/deploy-cloudrun@v2
+        with:
+          service: ${{ env.SERVICE_NAME }}
+          region: ${{ env.REGION }}
+          image: ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.ARTIFACT_REPOSITORY }}/${{ env.SERVICE_NAME }}:${{ github.sha }}
+          env_vars: |
+            SFTP_HOST=${{ vars.SFTP_HOST }}
+            SFTP_USERNAME=${{ vars.SFTP_USERNAME }}
+            SFTP_PASSWORD=${{ secrets.SFTP_PASSWORD }}
+            SFTP_DIRECTORY=${{ vars.SFTP_DIRECTORY }}
+            GCS_BUCKET=${{ vars.GCS_BUCKET }}
+            CONFIG_PATH=configs/exports.json
+          timeout: 2400s
+          flags: >-
+            --no-allow-unauthenticated
+            --min-instances=0
+            --max-instances=10
+            --concurrency=5
+            --memory=2Gi
+            --cpu=1
+
+      - name: Show Service URL
+        run: |
+          echo "✅ Service deployed: ${{ steps.deploy.outputs.url }}"
+          echo ""
+          echo "Endpoints:"
+          echo "  POST /transfer - Transfer GCS files to SFTP"
+          echo "  POST /verify   - Verify GCS and SFTP are in sync"
+          echo "  GET  /health   - Health check"

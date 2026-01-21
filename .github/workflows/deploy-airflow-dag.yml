@@ -1,0 +1,46 @@
+name: Deploy Airflow DAG to Cloud Composer
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'airflow/dags/**'
+      - '.github/workflows/deploy-airflow-dag.yml'
+  workflow_dispatch:
+
+env:
+  PROJECT_ID: insightsprod
+  COMPOSER_BUCKET: us-central1-edm-pulse-compo-d334fad9-bucket
+  DAG_FOLDER: dags/boxout_sftp_export
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Google Auth
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+
+      - name: Sync DAG to Cloud Composer
+        run: |
+          echo "Syncing DAG files to Cloud Composer..."
+          echo "Source: airflow/dags/"
+          echo "Target: gs://${{ env.COMPOSER_BUCKET }}/${{ env.DAG_FOLDER }}/"
+          # rsync -d deletes files in destination not present in source
+          gsutil -m rsync -r -d airflow/dags/ gs://${{ env.COMPOSER_BUCKET }}/${{ env.DAG_FOLDER }}/
+          echo "✅ DAG files synced successfully"
+
+      - name: List deployed files
+        run: |
+          echo "Files in Composer DAGs folder:"
+          gsutil ls -r gs://${{ env.COMPOSER_BUCKET }}/${{ env.DAG_FOLDER }}/
