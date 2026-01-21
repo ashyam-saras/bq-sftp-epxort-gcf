@@ -480,9 +480,9 @@ def list_sftp_directory(sftp_config: Dict[str, Any], directory: str, long_format
     username = sftp_config["username"]
     password = sftp_config["password"]
 
-    try:
-        transport, sftp = create_sftp_connection(host, port, username, password)
+    transport, sftp = create_sftp_connection(host, port, username, password)
 
+    try:
         entries = []
         try:
             for attr in sftp.listdir_attr(directory):
@@ -498,15 +498,12 @@ def list_sftp_directory(sftp_config: Dict[str, Any], directory: str, long_format
         except FileNotFoundError:
             raise FileNotFoundError(f"Directory not found: {directory}")
 
-        sftp.close()
-        transport.close()
-
         # Sort: directories first, then alphabetically
         entries.sort(key=lambda x: (not x["is_dir"], x["name"].lower()))
         return entries
-
-    except Exception as e:
-        raise
+    finally:
+        sftp.close()
+        transport.close()
 
 
 def list_sftp_tree(sftp_config: Dict[str, Any], directory: str, max_depth: int = 3) -> None:
@@ -527,37 +524,38 @@ def list_sftp_tree(sftp_config: Dict[str, Any], directory: str, max_depth: int =
 
     transport, sftp = create_sftp_connection(host, port, username, password)
 
-    def _print_tree(path: str, prefix: str = "", depth: int = 0):
-        if depth > max_depth:
-            return
+    try:
+        def _print_tree(path: str, prefix: str = "", depth: int = 0):
+            if depth > max_depth:
+                return
 
-        try:
-            entries = sftp.listdir_attr(path)
-        except (PermissionError, FileNotFoundError):
-            return
+            try:
+                entries = sftp.listdir_attr(path)
+            except (PermissionError, FileNotFoundError):
+                return
 
-        # Sort: directories first, then alphabetically
-        entries.sort(key=lambda x: (not stat.S_ISDIR(x.st_mode) if x.st_mode else True, x.filename.lower()))
+            # Sort: directories first, then alphabetically
+            entries.sort(key=lambda x: (not stat.S_ISDIR(x.st_mode) if x.st_mode else True, x.filename.lower()))
 
-        for i, attr in enumerate(entries):
-            is_last = i == len(entries) - 1
-            connector = "└── " if is_last else "├── "
-            is_dir = stat.S_ISDIR(attr.st_mode) if attr.st_mode else False
+            for i, attr in enumerate(entries):
+                is_last = i == len(entries) - 1
+                connector = "└── " if is_last else "├── "
+                is_dir = stat.S_ISDIR(attr.st_mode) if attr.st_mode else False
 
-            if is_dir:
-                print(f"{prefix}{connector}{attr.filename}/")
-                new_prefix = prefix + ("    " if is_last else "│   ")
-                new_path = f"{path.rstrip('/')}/{attr.filename}"
-                _print_tree(new_path, new_prefix, depth + 1)
-            else:
-                size_str = _format_size(attr.st_size) if attr.st_size else "0B"
-                print(f"{prefix}{connector}{attr.filename} ({size_str})")
+                if is_dir:
+                    print(f"{prefix}{connector}{attr.filename}/")
+                    new_prefix = prefix + ("    " if is_last else "│   ")
+                    new_path = f"{path.rstrip('/')}/{attr.filename}"
+                    _print_tree(new_path, new_prefix, depth + 1)
+                else:
+                    size_str = _format_size(attr.st_size) if attr.st_size else "0B"
+                    print(f"{prefix}{connector}{attr.filename} ({size_str})")
 
-    print(f"{directory}")
-    _print_tree(directory)
-
-    sftp.close()
-    transport.close()
+        print(f"{directory}")
+        _print_tree(directory)
+    finally:
+        sftp.close()
+        transport.close()
 
 
 def _format_size(size: int) -> str:
