@@ -1,218 +1,319 @@
 # BigQuery to SFTP Export Service
 
-This service extracts data from BigQuery tables and uploads it to an SFTP server. It runs as a Cloud Run service, with support for both incremental and full exports, and can be triggered via HTTP requests or Pub/Sub messages.
+Export data from BigQuery to an SFTP server via Google Cloud Storage, orchestrated by Airflow.
 
-## Features
+## Architecture
 
-- **Cloud Run Service**: Runs as a scalable, containerized service
-- **Pub/Sub Integration**: Can be triggered via Pub/Sub messages for asynchronous processing
-- **Cloud Scheduler**: Automated scheduling with Google Cloud Scheduler
-- **Configurable Table Exports**: Define tables to export using a JSON configuration file
-- **Date Range Exports**: Export data from a specific date range
-- **Full Table Exports**: Export entire tables regardless of date
-- **SFTP Export**: Secure upload to SFTP servers with multiple file handling
-- **Parallel Transfer**: Multi-threaded uploads for improved performance
-- **Export Tracking**: Metadata table for tracking export history and status
-- **Structured Logging**: JSON-formatted logs for better observability
-
-## Configuration
-
-The service uses a JSON configuration file to define export settings:
-
-```json
-{
-    "sftp": {
-        "host": "sftp.example.com",
-        "port": 22,
-        "username": "user",
-        "password": "password",
-        "directory": "/uploads"
-    },
-    "gcs": {
-        "bucket": "my-export-bucket"
-    },
-    "metadata": {
-        "export_metadata_table": "project.dataset.export_metadata"
-    },
-    "exports": {
-        "product_data": {
-            "source_table": "project.dataset.products",
-            "compress": true,
-            "export_type": "date_range",
-            "date_column": "modified_date",
-            "days_lookback": 30
-        },
-        "customer_data": {
-            "source_table": "project.dataset.customers",
-            "compress": true,
-            "export_type": "full"
-        }
-    }
-}
 ```
+┌──────────────────────────────────────────────────────────────────────────────────┐
+│                         Airflow DAG: sftp_export                                 │
+│                         (schedule: 0 6 * * *)                                    │
+├──────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│  ┌─ TaskGroup: export_1 ──────────────────────────────────────────────────────┐  │
+│  │  bq_export ──────▶ gcf_transfer ──────▶ verify_sync                        │  │
+│  └────────────────────────────────────────────────────────────────────────────┘  │
+│                              ║ (parallel)                                        │
+│  ┌─ TaskGroup: export_2 ──────────────────────────────────────────────────────┐  │
+│  │  bq_export ──────▶ gcf_transfer ──────▶ verify_sync                        │  │
+│  └────────────────────────────────────────────────────────────────────────────┘  │
+│                                                                                  │
+│  on_failure_callback ──────▶ Slack notification                                  │
+└──────────────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌──────────────────────────────────────────────────────────────────────────────────┐
+│                           Cloud Run Service                                      │
+├──────────────────────────────────────────────────────────────────────────────────┤
+│  POST /transfer   - Download from GCS, upload to SFTP                            │
+│  POST /verify     - Compare GCS files with SFTP files                            │
+│  GET  /health     - Health check                                                 │
+└──────────────────────────────────────────────────────────────────────────────────┘
+```
+
+## Data Flow
+
+1. **Airflow** runs `EXPORT DATA` query to export BigQuery table to GCS
+2. **Airflow** triggers Cloud Run `/transfer` endpoint
+3. **Cloud Run** downloads files from GCS and uploads to SFTP
+4. **Airflow** calls Cloud Run `/verify` to confirm sync
+5. On failure, **Slack notification** is sent
 
 ## Project Structure
 
 ```
 bq-sftp-export/
-├── .github/
-│   └── workflows/
-│       └── deploy-cloud-run.yml    # CI/CD workflow for deployment
+├── airflow/
+│   └── dags/
+│       └── sftp_export_dag.py      # Airflow DAG definition
 ├── configs/
-│   └── default.json                # Default export configuration
-├── scripts/
-│   ├── failed_transfers.py         # Utility to detect failed transfers
-│   ├── retry_transfers.py          # Utility to retry failed transfers
-│   ├── setup_cloudrun.sh           # Script to deploy to Cloud Run
-│   ├── setup_pubsub.sh             # Script to set up Pub/Sub integration
-│   └── setup_schedulers.sh         # Script to set up Cloud Scheduler jobs
+│   └── exports.json                # Export configuration
 ├── src/
-│   ├── __init__.py
-│   ├── bigquery.py                 # BigQuery operations
-│   ├── config.py                   # Configuration handling
-│   ├── helpers.py                  # Helper functions
-│   ├── main.py                     # Main service logic
-│   ├── metadata.py                 # Export metadata tracking
-│   └── sftp.py                     # SFTP operations
-├── tests/
-│   ├── __init__.py
-│   ├── test_bigquery.py
-│   ├── test_config.py
-│   ├── test_helpers.py
-│   ├── test_main.py
-│   ├── test_metadata.py
-│   └── test_sftp.py
-├── .gitignore
+│   ├── config.py                   # Configuration loading
+│   ├── helpers.py                  # Logging utilities
+│   ├── sftp.py                     # SFTP operations
+│   ├── transfer.py                 # GCS → SFTP transfer logic
+│   └── verify.py                   # Sync verification logic
+├── server.py                       # Cloud Run HTTP server
 ├── Dockerfile                      # Container definition
-├── README.md
-├── requirements.txt                # Production dependencies
-├── requirements-dev.txt            # Development dependencies
-└── server.py                       # HTTP server for Cloud Run
+└── requirements.txt                # Python dependencies
 ```
 
-## Deployment
+## Configuration
 
-### Local Development
+### Export Configuration (`configs/exports.json`)
+
+```json
+{
+  "gcs_bucket": "your-bucket-name",
+  "gcs_expiration_days": 30,
+  "cloud_run_url": "https://your-service.run.app",
+  "sftp": {
+    "host": "sftp.example.com",
+    "port": 22,
+    "username": "user",
+    "password": "password",
+    "directory": "/uploads"
+  },
+  "exports": {
+    "product_data": {
+      "query": "SELECT * FROM `project.dataset.products` WHERE DATE(created_at) = '{date}'",
+      "format": "CSV",
+      "compression": "GZIP"
+    },
+    "customer_data": {
+      "query": "SELECT id, name, email FROM `project.dataset.customers`",
+      "format": "CSV",
+      "compression": "GZIP"
+    }
+  }
+}
+```
+
+### Configuration Options
+
+| Field | Description | Default |
+|-------|-------------|---------|
+| `gcs_bucket` | GCS bucket for exports | Required |
+| `gcs_expiration_days` | Auto-delete files after N days | 30 |
+| `cloud_run_url` | Cloud Run service URL | Required |
+| `sftp.host` | SFTP server hostname | Required |
+| `sftp.port` | SFTP server port | 22 |
+| `sftp.username` | SFTP username | Required |
+| `sftp.password` | SFTP password | Required |
+| `sftp.directory` | Remote directory for uploads | Required |
+
+### Export Options
+
+| Field | Description | Default |
+|-------|-------------|---------|
+| `query` | SELECT query (use `{date}` placeholder for YYYYMMDD) | Required |
+| `format` | Export format: CSV, JSON, AVRO, PARQUET | CSV |
+| `compression` | Compression: GZIP, SNAPPY, NONE | GZIP |
+
+## Airflow Setup
+
+### 1. Create Airflow Variable
+
+Store the config JSON in an Airflow Variable named `sftp_export_config`:
 
 ```bash
-# Set up virtual environment
+airflow variables set sftp_export_config "$(cat configs/exports.json)"
+```
+
+### 2. Create HTTP Connection
+
+Create an Airflow HTTP connection for Cloud Run:
+
+- **Connection ID**: `cloud_run_sftp_export`
+- **Connection Type**: HTTP
+- **Host**: `https://your-service.run.app`
+- **Extra**: `{"Authorization": "Bearer <ID_TOKEN>"}`
+
+### 3. Set Slack Webhook (Optional)
+
+For failure notifications:
+
+```bash
+airflow variables set slack_webhook_url "https://hooks.slack.com/services/XXX/YYY/ZZZ"
+```
+
+## Cloud Run Deployment
+
+### Build and Deploy
+
+```bash
+# Build container
+gcloud builds submit --tag gcr.io/PROJECT_ID/bq-sftp-export
+
+# Deploy to Cloud Run
+# NOTE: timeout must be >= Airflow task's requests timeout (1800s for transfer)
+gcloud run deploy bq-sftp-export \
+  --image gcr.io/PROJECT_ID/bq-sftp-export \
+  --platform managed \
+  --region us-central1 \
+  --memory 2Gi \
+  --timeout 2400 \
+  --concurrency 10 \
+  --set-env-vars "SFTP_HOST=sftp.example.com,SFTP_USERNAME=user,SFTP_PASSWORD=pass,SFTP_DIRECTORY=/uploads"
+```
+
+### Environment Variables
+
+| Variable | Description |
+|----------|-------------|
+| `CONFIG_PATH` | Path to config file (default: `configs/exports.json`) |
+| `SFTP_HOST` | SFTP host (if not using config file) |
+| `SFTP_USERNAME` | SFTP username |
+| `SFTP_PASSWORD` | SFTP password |
+| `SFTP_DIRECTORY` | SFTP target directory |
+
+## API Reference
+
+### POST /transfer
+
+Transfer files from GCS to SFTP.
+
+**Request:**
+```json
+{
+  "export_name": "product_data",
+  "gcs_path": "gs://bucket/product_data/20250108/",
+  "date": "2025-01-08"
+}
+```
+
+**Response:**
+```json
+{
+  "status": "success",
+  "export_name": "product_data",
+  "files_transferred": 3,
+  "files": ["file1.csv.gz", "file2.csv.gz", "file3.csv.gz"],
+  "total_mb": 12.5,
+  "destination": "/uploads/",
+  "total_time_seconds": 45.2
+}
+```
+
+### POST /verify
+
+Verify GCS and SFTP are in sync.
+
+**Request:**
+```json
+{
+  "export_name": "product_data",
+  "gcs_path": "gs://bucket/product_data/20250108/"
+}
+```
+
+**Response:**
+```json
+{
+  "status": "success",
+  "in_sync": true,
+  "gcs_file_count": 3,
+  "sftp_file_count": 3,
+  "missing_on_sftp": [],
+  "size_mismatches": []
+}
+```
+
+## Local Development
+
+### Setup
+
+```bash
+# Create virtual environment
 python -m venv venv
 source venv/bin/activate
+
+# Install dependencies
 pip install -r requirements.txt
 pip install -r requirements-dev.txt
 
-# Set required environment variables
-export GOOGLE_APPLICATION_CREDENTIALS="path/to/service-account-key.json"
-export EXPORT_METADATA_TABLE="project.dataset.export_metadata"
-export GCS_BUCKET="my-export-bucket"
+# Set environment variables
 export SFTP_HOST="sftp.example.com"
-export SFTP_USERNAME="username"
+export SFTP_USERNAME="user"
 export SFTP_PASSWORD="password"
 export SFTP_DIRECTORY="/uploads"
+export GOOGLE_APPLICATION_CREDENTIALS="path/to/service-account.json"
+```
 
-# Run the server locally
+### Run Server Locally
+
+```bash
 python server.py
 ```
 
-### Build and Deploy to Cloud Run
+### Test Transfer
 
 ```bash
-# Make the script executable
-chmod +x scripts/setup_cloudrun.sh
-
-# Run deployment script
-./scripts/setup_cloudrun.sh
-```
-
-### Setting Up Pub/Sub Integration
-
-```bash
-# Make the script executable
-chmod +x scripts/setup_pubsub.sh  
-
-# Run the Pub/Sub setup script
-./scripts/setup_pubsub.sh
-```
-
-### Setting Up Cloud Scheduler
-
-```bash
-# Make the script executable
-chmod +x scripts/setup_schedulers.sh
-
-# Run the scheduler setup script
-./scripts/setup_schedulers.sh
-```
-
-## Usage
-
-### Triggering Exports via HTTP
-
-```bash
-# Direct API call 
-curl -X POST https://your-service-url/ \
+curl -X POST http://localhost:8080/transfer \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $(gcloud auth print-identity-token)" \
-  -d '{"export_name":"product_data","date":"2025-03-17"}'
+  -d '{
+    "export_name": "test_export",
+    "gcs_path": "gs://your-bucket/test/20250108/"
+  }'
 ```
 
-### Triggering Exports via Pub/Sub
+## GCS Lifecycle Policy
+
+To auto-delete exported files after 30 days, set a lifecycle rule on your bucket:
 
 ```bash
-# Publish message to Pub/Sub topic
-gcloud pubsub topics publish boxout-sftp-export-triggers \
-  --message='{"export_name":"product_data","date":"2025-03-17"}'
+gsutil lifecycle set lifecycle.json gs://your-bucket
 ```
 
-### Checking for Failed Transfers
-
-```bash
-# Run the check script
-python scripts/failed_transfers.py --export-name PnL_Amazon --date 20250317 \
-  --gcs-prefix PnL_Amazon/20250317/
-```
-
-### Retrying Failed Transfers
-
-```bash
-# Retry failed transfers
-python scripts/retry_transfers.py --export-name PnL_Amazon --date 20250317 \
-  --missing-files missing_files.txt
-```
-
-## Metadata Table Schema
-
-```sql
-CREATE TABLE IF NOT EXISTS `project.dataset.export_metadata` (
-  export_id STRING NOT NULL,
-  export_name STRING NOT NULL,
-  source_table STRING NOT NULL,
-  destination_uri STRING NOT NULL,
-  status STRING NOT NULL,
-  rows_exported INT64,
-  started_at TIMESTAMP NOT NULL,
-  completed_at TIMESTAMP,
-  error_message STRING,
-  PRIMARY KEY(export_id) NOT ENFORCED
-)
-PARTITION BY DATE(started_at)
-CLUSTER BY export_name, status;
+**lifecycle.json:**
+```json
+{
+  "rule": [
+    {
+      "action": {"type": "Delete"},
+      "condition": {
+        "age": 30,
+        "matchesPrefix": ["exports/"]
+      }
+    }
+  ]
+}
 ```
 
 ## Monitoring
 
-Monitor the service through:
-- Cloud Run logs
-- Cloud Logging
-- BigQuery metadata table
-- Cloud Scheduler execution history
-- Pub/Sub message delivery logs
+- **Airflow UI**: Task status, logs, and DAG runs
+- **Cloud Run Logs**: Transfer details and errors
+- **Slack**: Failure notifications
 
-## Environment Variables
+## Troubleshooting
 
-- `SFTP_HOST`: SFTP server hostname
-- `SFTP_USERNAME`: SFTP username  
-- `SFTP_PASSWORD`: SFTP password
-- `SFTP_DIRECTORY`: Base directory on SFTP server
-- `GCS_BUCKET`: GCS bucket for temporary storage
-- `EXPORT_METADATA_TABLE`: BigQuery table for export metadata
+### Common Issues
+
+1. **SFTP Connection Failed**
+   - Verify SFTP credentials
+   - Check firewall rules (port 22)
+   - Test with: `python -m src.sftp check`
+
+2. **No Files Found in GCS**
+   - Verify BigQuery export completed
+   - Check GCS path format: `gs://bucket/export_name/YYYYMMDD/`
+
+3. **Verification Failed**
+   - Check SFTP directory permissions
+   - Compare file sizes in logs
+   - Re-run transfer task
+
+### Debug Commands
+
+```bash
+# Test SFTP connection
+python -m src.sftp check
+
+# List GCS files
+gsutil ls "gs://bucket/export_name/20250108/"
+
+# Check Cloud Run logs
+gcloud run services logs read bq-sftp-export --limit 100
+```

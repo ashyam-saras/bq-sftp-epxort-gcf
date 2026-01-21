@@ -1,0 +1,28 @@
+{
+    "gcs_bucket": "boxout-sftp-transfer",
+    "gcs_expiration_days": 30,
+    "cloud_run_url": "https://bq-sftp-export-xxxxx.run.app",
+    "sftp": {
+        "host": "sftp.boxouthealth.com",
+        "port": 22,
+        "username": "Saras",
+        "directory": "/saras"
+    },
+    "exports": {
+        "account_overview_sales": {
+            "query": "SELECT * FROM `insightsprod.boxoutllc_4517_prod_presentation.account_overview_sales` WHERE date BETWEEN DATE_SUB(DATE('{data_interval_end}'), INTERVAL 7 DAY) AND DATE('{data_interval_end}')",
+            "format": "CSV",
+            "compression": "GZIP"
+        },
+        "Product": {
+            "query": "SELECT * FROM `insightsprod.boxoutllc_4517_prod_presentation.Product_PBI` WHERE date BETWEEN DATE_SUB(DATE('{data_interval_end}'), INTERVAL 7 DAY) AND DATE('{data_interval_end}')",
+            "format": "CSV",
+            "compression": "GZIP"
+        },
+        "traffic_analysis": {
+            "query": "SELECT * FROM `insightsprod.boxoutllc_4517_prod_presentation.traffic_analysis` WHERE date BETWEEN DATE_SUB(DATE('{data_interval_end}'), INTERVAL 7 DAY) AND DATE('{data_interval_end}')",
+            "format": "CSV",
+            "compression": "GZIP"
+        }
+    }
+}

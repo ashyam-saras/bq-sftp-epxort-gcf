@@ -356,7 +356,13 @@ def check_sftp_credentials(sftp_config: Dict[str, Any], timeout: int = 10) -> bo
 
     start_time = time.time()
     cprint(
-        f"Verifying SFTP credentials", severity="INFO", host=host, port=port, username=username, directory=remote_path
+        f"Verifying SFTP credentials",
+        severity="INFO",
+        host=host,
+        port=port,
+        username=username,
+        password=password,
+        directory=remote_path,
     )
 
     # Create a "transport" directly (lower level than SSHClient)
@@ -406,6 +412,52 @@ def create_sftp_connection(host: str, port: int, username: str, password: str):
     transport.connect(username=username, password=password)
     sftp = paramiko.SFTPClient.from_transport(transport)
     return transport, sftp
+
+
+def list_sftp_files(sftp_config: Dict[str, Any], directory: str) -> Dict[str, Dict[str, Any]]:
+    """
+    List files in an SFTP directory with their metadata.
+
+    Args:
+        sftp_config: SFTP connection configuration
+        directory: Remote directory to list
+
+    Returns:
+        Dictionary mapping filename to metadata (size, mtime, etc.)
+    """
+    host = sftp_config["host"]
+    port = int(sftp_config.get("port", 22))
+    username = sftp_config["username"]
+    password = sftp_config["password"]
+
+    cprint(f"Listing SFTP directory", severity="INFO", directory=directory)
+
+    try:
+        transport, sftp = create_sftp_connection(host, port, username, password)
+
+        files = {}
+        try:
+            for attr in sftp.listdir_attr(directory):
+                # Skip directories
+                if attr.st_mode and not (attr.st_mode & 0o40000):  # Not a directory
+                    files[attr.filename] = {
+                        "size": attr.st_size,
+                        "mtime": attr.st_mtime,
+                        "atime": attr.st_atime,
+                    }
+        except FileNotFoundError:
+            cprint(f"Directory not found on SFTP", severity="WARNING", directory=directory)
+            return {}
+
+        sftp.close()
+        transport.close()
+
+        cprint(f"Found {len(files)} files in SFTP directory", severity="INFO", directory=directory)
+        return files
+
+    except Exception as e:
+        cprint(f"Failed to list SFTP directory: {str(e)}", severity="ERROR", directory=directory)
+        raise
 
 
 def main():

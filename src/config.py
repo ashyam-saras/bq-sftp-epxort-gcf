@@ -1,5 +1,5 @@
 """
-Configuration loading and validation for BigQuery to SFTP export function.
+Configuration loading and validation for GCS→SFTP export service.
 """
 
 import json
@@ -11,7 +11,6 @@ from src.helpers import cprint
 
 class ConfigError(Exception):
     """Exception raised for configuration errors."""
-
     pass
 
 
@@ -28,36 +27,53 @@ def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
     Raises:
         ConfigError: If configuration is invalid or missing required fields
     """
-    # If path provided, load from file
-    if config_path and os.path.exists(config_path):
-        try:
-            with open(config_path, "r") as f:
-                config = json.load(f)
-        except Exception as e:
-            raise ConfigError(f"Failed to load config file: {str(e)}")
+    config = None
+    
+    # Priority 1: Explicit path provided
+    if config_path:
+        if os.path.exists(config_path):
+            try:
+                with open(config_path, "r") as f:
+                    config = json.load(f)
+                    cprint(f"Loaded config from file", severity="INFO", path=config_path)
+            except Exception as e:
+                raise ConfigError(f"Failed to load config file '{config_path}': {str(e)}")
     else:
-        # Load from environment variables
+            raise ConfigError(f"Config file not found: {config_path}")
+    
+    # Priority 2: EXPORT_CONFIG environment variable (full JSON)
+    if config is None:
         config_json = os.environ.get("EXPORT_CONFIG")
         if config_json:
             try:
                 config = json.loads(config_json)
-            except json.JSONDecodeError:
-                raise ConfigError("Invalid JSON in EXPORT_CONFIG environment variable")
-        else:
-            # Build config from individual environment variables
+                cprint("Loaded config from EXPORT_CONFIG env var", severity="INFO")
+            except json.JSONDecodeError as e:
+                raise ConfigError(f"Invalid JSON in EXPORT_CONFIG environment variable: {e}")
+    
+    # Priority 3: Individual environment variables (minimal config)
+    if config is None:
+        sftp_host = os.environ.get("SFTP_HOST")
+        if sftp_host:
             config = {
                 "sftp": {
-                    "host": os.environ.get("SFTP_HOST"),
+                    "host": sftp_host,
                     "port": int(os.environ.get("SFTP_PORT", "22")),
                     "username": os.environ.get("SFTP_USERNAME"),
                     "password": os.environ.get("SFTP_PASSWORD"),
                     "directory": os.environ.get("SFTP_DIRECTORY", "/"),
-                    "upload_method": os.environ.get("SFTP_UPLOAD_METHOD", "download"),
                 },
-                "gcs": {"bucket": os.environ.get("GCS_BUCKET")},
-                "metadata": {"export_metadata_table": os.environ.get("EXPORT_METADATA_TABLE", "")},
-                "exports": {},
+                "gcs": {
+                    "bucket": os.environ.get("GCS_BUCKET"),
+                    "expiration_days": int(os.environ.get("GCS_EXPIRATION_DAYS", "30")),
+                },
             }
+            cprint("Loaded config from individual env vars", severity="INFO")
+        else:
+            raise ConfigError(
+                "No configuration found. Provide config_path, EXPORT_CONFIG env var, "
+                "or individual SFTP_* environment variables."
+            )
 
     # Validate config
     _validate_config(config)
@@ -65,40 +81,49 @@ def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
 
 
 def _validate_config(config: Dict[str, Any]) -> None:
-    """Validate configuration and set defaults."""
-    if "exports" not in config or not isinstance(config["exports"], dict):
-        raise ConfigError("Missing or invalid exports section in config")
+    """Validate configuration structure."""
+    # SFTP configuration is required
+    if "sftp" not in config or not isinstance(config["sftp"], dict):
+        raise ConfigError("Missing 'sftp' configuration section")
 
-    for name, export in config["exports"].items():
-        # Validate required fields
-        if "source_table" not in export:
-            raise ConfigError(f"Missing source_table in export config: {name}")
+    required_sftp = ["host", "username", "password", "directory"]
+    missing = [k for k in required_sftp if not config["sftp"].get(k)]
+    if missing:
+        raise ConfigError(f"Missing required SFTP configuration: {', '.join(missing)}")
 
-        # Set defaults for optional fields
-        export["export_type"] = export.get("export_type", "full")
-
-        # Validate date range export configuration
-        if export.get("date_column") and "days_lookback" not in export:
-            export["days_lookback"] = 7
-            cprint(f"Export '{name}' has date_column but no days_lookback, using default: 7 days", severity="INFO")
-
-    # SFTP configuration
-    if "sftp" not in config:
-        # Set default SFTP config from environment variables
-        config["sftp"] = {
-            "host": os.environ.get("SFTP_HOST", ""),
-            "port": int(os.environ.get("SFTP_PORT", 22)),
-            "username": os.environ.get("SFTP_USERNAME", ""),
-            "password": os.environ.get("SFTP_PASSWORD", ""),
-            "directory": os.environ.get("SFTP_DIRECTORY", "/"),
-        }
-
-    # GCS configuration
+    # GCS configuration is optional but has defaults
     if "gcs" not in config:
-        # Set default GCS config from environment variables
-        config["gcs"] = {"bucket": os.environ.get("GCS_BUCKET", "")}
+        config["gcs"] = {}
+    
+    config["gcs"].setdefault("expiration_days", 30)
+    
+    # Exports configuration is optional (can be passed at runtime)
+    if "exports" in config:
+        for name, export_config in config["exports"].items():
+            if "query" not in export_config:
+                raise ConfigError(f"Export '{name}' missing required 'query' field")
 
-    # Keep just the export_metadata_table part
-    if "metadata" not in config:
-        # Set default metadata config from environment variables
-        config["metadata"] = {"export_metadata_table": os.environ.get("EXPORT_METADATA_TABLE", "")}
+    cprint("Configuration validated successfully", severity="INFO")
+
+
+def get_export_config(config: Dict[str, Any], export_name: str) -> Dict[str, Any]:
+    """
+    Get configuration for a specific export.
+    
+    Args:
+        config: Full configuration dictionary
+        export_name: Name of the export
+    
+    Returns:
+        Export-specific configuration
+    
+    Raises:
+        ConfigError: If export not found
+    """
+    exports = config.get("exports", {})
+    if export_name not in exports:
+        available = list(exports.keys())
+        raise ConfigError(
+            f"Export '{export_name}' not found. Available exports: {available}"
+        )
+    return exports[export_name]
