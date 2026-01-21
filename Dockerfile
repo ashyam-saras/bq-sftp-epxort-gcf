@@ -22,4 +22,5 @@ ENV PORT=8080
 EXPOSE 8080
 
 # Use Gunicorn as the entrypoint
-CMD ["sh", "-c", "exec gunicorn --bind :$PORT --workers 1 --threads 8 --timeout 900 server:app"]
+# Timeout should match or exceed Cloud Run timeout (2400s)
+CMD ["sh", "-c", "exec gunicorn --bind :$PORT --workers 1 --threads 8 --timeout 2400 server:app"]

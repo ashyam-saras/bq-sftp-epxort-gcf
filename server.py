@@ -1,142 +1,152 @@
-import base64
+"""
+Cloud Run server for GCS → SFTP file transfer.
+Triggered by Airflow via HTTP POST requests.
+"""
+
 import datetime
 import json
 import os
-import re
 
-import requests
 from flask import Flask, jsonify, request
 
 from src.config import load_config
 from src.helpers import cprint
-from src.main import export_from_pattern
+from src.transfer import transfer_gcs_to_sftp
 
 app = Flask(__name__)
 
+# Load config once at startup
+CONFIG_PATH = os.environ.get("CONFIG_PATH", "configs/exports.json")
 
-def send_slack_notification(export_name: str, result: dict):
-    """Send Slack notification for completed export."""
-    slack_webhook_url = os.getenv("SLACK_WEBHOOK_URL")
-    if not slack_webhook_url:
-        cprint("No SLACK_WEBHOOK_URL configured, skipping notification", severity="WARNING")
-        return
 
+@app.route("/transfer", methods=["POST"])
+def handle_transfer():
+    """
+    Transfer files from GCS to SFTP.
+
+    Expected payload:
+    {
+        "export_name": "product_data",
+        "gcs_path": "gs://bucket/exports/product_data/20250108/",
+        "date": "2025-01-08"  # optional, for logging
+    }
+
+    Returns:
+    {
+        "status": "success",
+        "export_name": "product_data",
+        "files_transferred": 3,
+        "total_mb": 12.5,
+        "destination": "/saras/product_data_20250108.csv.gz"
+    }
+    """
     try:
-        # Format the destination path for display
-        destination = result.get("destination", "Unknown")
-        if destination.endswith("/*"):
-            destination = destination[:-2] + " (multiple files)"
+        data = request.get_json()
+        if not data:
+            return jsonify({"status": "error", "message": "No JSON payload"}), 400
 
-        # Create the Slack message
-        message = {
-            "text": f"📊 *Export Complete: {export_name}*",
-            "blocks": [
-                {"type": "header", "text": {"type": "plain_text", "text": f"📊 Export Complete: {export_name}"}},
-                {
-                    "type": "section",
-                    "fields": [
-                        {"type": "mrkdwn", "text": f"*Table:*\n{export_name}"},
-                        {"type": "mrkdwn", "text": f"*Files Transferred:*\n{result.get('files_transferred', 0)}"},
-                        {"type": "mrkdwn", "text": f"*Destination:*\n{destination}"},
-                        {"type": "mrkdwn", "text": f"*Size:*\n{result.get('total_mb', 0):.2f} MB"},
-                        {"type": "mrkdwn", "text": f"*Duration:*\n{result.get('total_time_seconds', 0):.1f}s"},
-                        {"type": "mrkdwn", "text": f"*Source:*\n{result.get('source', 'Unknown')}"},
-                    ],
-                },
-                {
-                    "type": "context",
-                    "elements": [
-                        {
-                            "type": "mrkdwn",
-                            "text": f"✅ Export completed successfully at {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')}",
-                        }
-                    ],
-                },
-            ],
-        }
+        export_name = data.get("export_name")
+        gcs_path = data.get("gcs_path")
+        export_date = data.get("date", datetime.date.today().isoformat())
 
-        response = requests.post(slack_webhook_url, json=message, timeout=10)
-        response.raise_for_status()
-        cprint("Slack notification sent successfully", severity="INFO")
+        if not export_name:
+            return jsonify({"status": "error", "message": "Missing export_name"}), 400
+        if not gcs_path:
+            return jsonify({"status": "error", "message": "Missing gcs_path"}), 400
 
-    except Exception as e:
-        cprint(f"Failed to send Slack notification: {str(e)}", severity="ERROR")
-
-
-@app.route("/", methods=["POST"])
-def handle_request():
-    """Endpoint that handles Scheduled Query Pub/Sub events only."""
-    try:
-        envelope = request.get_json()
-        if not envelope or "message" not in envelope or "data" not in envelope["message"]:
-            return jsonify({"status": "error", "message": "Invalid Pub/Sub envelope"}), 400
-
-        # Decode base64 data
-        data_str = base64.b64decode(envelope["message"]["data"]).decode("utf-8")
-        try:
-            # Parse JSON payload
-            data = json.loads(data_str)
-        except json.JSONDecodeError:
-            return jsonify({"status": "error", "message": "Invalid JSON in Pub/Sub message"}), 400
-
-        if data.get("dataSourceId") != "scheduled_query" or not isinstance(data.get("params"), dict):
-            return jsonify({"status": "error", "message": "Unsupported payload; expected Scheduled Query"}), 400
-
-        query_text = data["params"].get("query", "")
-        run_time = data.get("runTime") or data.get("endTime")
-
-        # Extract the EXPORT DATA URI from the query
-        # Expect: uri = 'gs://bucket/export_name/%s/export_name-%s-*.csv.gz'
-        uri_match = re.search(r"uri\s*=\s*'([^']+)'", query_text)
-        if not uri_match:
-            return (
-                jsonify({"status": "error", "message": "Unable to find EXPORT DATA uri in Scheduled Query"}),
-                400,
-            )
-        uri_template = uri_match.group(1)
-
-        # Resolve %s placeholders using date from run_time
-        export_date = None
-        if run_time:
-            try:
-                dt = datetime.datetime.fromisoformat(run_time.replace("Z", "+00:00"))
-                export_date = dt.strftime(r"%Y%m%d")
-            except Exception:
-                export_date = None
-
-        if not export_date:
-            return jsonify({"status": "error", "message": "Missing or invalid runTime for date resolution"}), 400
-
-        # Replace all %s with export_date
-        resolved_uri = uri_template.replace("%s", export_date)
-
-        # Use the export_name as the first path segment after bucket
-        m = re.match(r"gs://[^/]+/([^/]+)/", resolved_uri)
-        export_name = m.group(1) if m else "scheduled_export"
-
-        # Call export from pattern/prefix
-        config = load_config("configs/default.json")
         cprint(
-            f"Starting export via Scheduled Query payload",
+            f"Received transfer request",
             severity="INFO",
             export_name=export_name,
-            source=resolved_uri,
-            run_time=run_time,
+            gcs_path=gcs_path,
+            date=export_date,
         )
-        result = export_from_pattern(config, export_name, resolved_uri)
 
-        # Send Slack notification if export was successful
-        if result.get("status") == "success":
-            send_slack_notification(export_name, result)
+        # Load config and execute transfer
+        config = load_config(CONFIG_PATH)
+        result = transfer_gcs_to_sftp(
+            sftp_config=config["sftp"],
+            gcs_path=gcs_path,
+            export_name=export_name,
+        )
 
-        return jsonify(result), 200
+        return jsonify(result), 200 if result["status"] == "success" else 500
+
+    except FileNotFoundError as e:
+        cprint(f"No files found: {str(e)}", severity="WARNING")
+        return jsonify({"status": "error", "message": str(e)}), 404
 
     except Exception as e:
-        cprint(f"Error processing request: {str(e)}", severity="ERROR")
+        cprint(f"Error processing transfer: {str(e)}", severity="ERROR")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route("/verify", methods=["POST"])
+def handle_verify():
+    """
+    Verify GCS and SFTP are in sync.
+
+    Expected payload:
+    {
+        "export_name": "product_data",
+        "gcs_path": "gs://bucket/exports/product_data/20250108/",
+        "expected_files": ["file1.csv.gz", "file2.csv.gz"]  # optional
+    }
+
+    Returns:
+    {
+        "status": "success",
+        "in_sync": true,
+        "gcs_files": ["file1.csv.gz", "file2.csv.gz"],
+        "sftp_files": ["file1.csv.gz", "file2.csv.gz"],
+        "missing_on_sftp": [],
+        "extra_on_sftp": []
+    }
+    """
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({"status": "error", "message": "No JSON payload"}), 400
+
+        export_name = data.get("export_name")
+        gcs_path = data.get("gcs_path")
+
+        if not export_name or not gcs_path:
+            return jsonify({"status": "error", "message": "Missing export_name or gcs_path"}), 400
+
+        config = load_config(CONFIG_PATH)
+
+        from src.verify import verify_gcs_sftp_sync
+
+        result = verify_gcs_sftp_sync(
+            sftp_config=config["sftp"],
+            gcs_path=gcs_path,
+            export_name=export_name,
+        )
+
+        status_code = 200 if result.get("in_sync", False) else 409
+        return jsonify(result), status_code
+
+    except Exception as e:
+        cprint(f"Error during verification: {str(e)}", severity="ERROR")
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
 @app.route("/health", methods=["GET"])
 def health_check():
-    """Health check endpoint for Cloud Run"""
-    return jsonify({"status": "healthy", "timestamp": datetime.datetime.now().isoformat()}), 200
+    """Health check endpoint for Cloud Run."""
+    return (
+        jsonify(
+            {
+                "status": "healthy",
+                "timestamp": datetime.datetime.now().isoformat(),
+                "config_path": CONFIG_PATH,
+            }
+        ),
+        200,
+    )
+
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host="0.0.0.0", port=port, debug=True)

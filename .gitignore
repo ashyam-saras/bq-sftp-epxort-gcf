@@ -169,3 +169,15 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+.DS_Store
+
+# Service account keys
+*-e52230d6e62c.json
+*-sa-key.json
+*-credentials.json
+
+# IDE
+.cursor/
+.vscode/
+.specstory/
+.idea/
