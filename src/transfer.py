@@ -200,7 +200,7 @@ def transfer_gcs_to_sftp(
         f"Transfer '{export_name}' completed",
         severity="INFO",
         export_name=export_name,
-        files=files_transferred,
+        files=len(transferred_files),
         destination=destination,
         total_time=f"{total_time:.2f}s",
     )
@@ -208,7 +208,7 @@ def transfer_gcs_to_sftp(
     return {
         "status": "success",
         "export_name": export_name,
-        "files_transferred": files_transferred,
+        "files_transferred": len(transferred_files),
         "files": transferred_files,
         "total_mb": round(total_bytes / (1024 * 1024), 2),
         "destination": destination,
