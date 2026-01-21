@@ -288,9 +288,9 @@ def test_upload_from_gcs_batch_parallel_isolated(mock_gcs, sftp_config):
 
     # Setup mocks for concurrent.futures
     mock_future1 = MagicMock()
-    mock_future1.result.return_value = True
+    mock_future1.result.return_value = "remote1.csv"  # Return filename on success
     mock_future2 = MagicMock()
-    mock_future2.result.return_value = True
+    mock_future2.result.return_value = "remote2.csv"  # Return filename on success
 
     mock_executor = MagicMock()
     mock_executor.__enter__.return_value = mock_executor
@@ -306,8 +306,9 @@ def test_upload_from_gcs_batch_parallel_isolated(mock_gcs, sftp_config):
         # Call the function under test
         result = upload_from_gcs_parallel(sftp_config, file_mappings, max_workers=2)
 
-        # Verify results
-        assert result == 2
+        # Verify results - should return list of successful filenames
+        assert len(result) == 2
+        assert set(result) == {"remote1.csv", "remote2.csv"}
         assert mock_executor.submit.call_count == 2
 
 
@@ -320,9 +321,9 @@ def test_upload_from_gcs_batch_parallel_with_failures(mock_gcs, sftp_config):
 
     # Create mock futures with different results
     mock_future1 = MagicMock()
-    mock_future1.result.return_value = True  # Success
+    mock_future1.result.return_value = "remote1.csv"  # Success - returns filename
     mock_future2 = MagicMock()
-    mock_future2.result.return_value = False  # Failure
+    mock_future2.result.return_value = None  # Failure - returns None
 
     # Create a mock executor that returns our prepared futures
     mock_executor = MagicMock()
@@ -338,8 +339,8 @@ def test_upload_from_gcs_batch_parallel_with_failures(mock_gcs, sftp_config):
         # Call the function
         result = upload_from_gcs_parallel(sftp_config, file_mappings, max_workers=2)
 
-        # Verify results - should have 1 success and 1 failure
-        assert result == 1
+        # Verify results - should have 1 success (only successful filename returned)
+        assert result == ["remote1.csv"]
         assert mock_executor.submit.call_count == 2
 
 
