@@ -172,7 +172,6 @@ def build_export_query(
     description="Export BigQuery data to SFTP via GCS",
     schedule="0 6 * * *",
     start_date=datetime(2025, 1, 1),
-    catchup=True,
     max_active_runs=3,
     default_args={
         "owner": "data-engineering",
