@@ -129,6 +129,7 @@ def verify_gcs_sftp_sync(
             missing_count=len(missing_on_sftp),
             missing_files=list(missing_on_sftp)[:10],  # Log first 10 missing files
             size_mismatch_count=len(size_mismatches),
+            size_mismatches=size_mismatches[:5],  # Log first 5 size mismatches with details
         )
 
     return result
