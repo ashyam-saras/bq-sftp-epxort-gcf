@@ -8,7 +8,7 @@ from google.cloud import storage
 
 from src.helpers import cprint
 from src.sftp import list_sftp_files
-from src.transfer import _list_gcs_files, _parse_gcs_url
+from src.transfer import _build_sftp_filename, _extract_date_from_gcs_path, _list_gcs_files, _parse_gcs_url
 
 
 def verify_gcs_sftp_sync(
@@ -37,11 +37,31 @@ def verify_gcs_sftp_sync(
     # Get files from GCS
     storage_client = storage.Client()
     gcs_blobs = _list_gcs_files(storage_client, gcs_path)
-    gcs_files: Set[str] = {blob.name.split("/")[-1] for blob in gcs_blobs}
+    
+    # Extract date from GCS path (same logic as transfer uses)
+    date_str = _extract_date_from_gcs_path(gcs_path)
+    
+    # Build expected SFTP filenames using same transformation as transfer
+    # GCS filename -> Expected SFTP filename (after renaming)
+    gcs_to_sftp_names = {}
+    for blob in gcs_blobs:
+        original_name = blob.name.split("/")[-1]
+        expected_sftp_name = _build_sftp_filename(original_name, export_name, date_str)
+        gcs_to_sftp_names[original_name] = expected_sftp_name
+    
+    # The expected filenames on SFTP (after transfer renaming)
+    gcs_files: Set[str] = set(gcs_to_sftp_names.values())
+    
+    cprint(
+        f"Expecting {len(gcs_files)} files on SFTP",
+        severity="INFO",
+        date_extracted=date_str,
+        sample_expected=list(gcs_files)[:3] if gcs_files else [],
+    )
 
-    # Get file sizes from GCS for comparison
+    # Get file sizes from GCS for comparison (keyed by expected SFTP filename)
     gcs_file_sizes = {
-        blob.name.split("/")[-1]: blob.size
+        _build_sftp_filename(blob.name.split("/")[-1], export_name, date_str): blob.size
         for blob in gcs_blobs
     }
 
@@ -107,6 +127,7 @@ def verify_gcs_sftp_sync(
             severity="ERROR",
             export_name=export_name,
             missing_count=len(missing_on_sftp),
+            missing_files=list(missing_on_sftp)[:10],  # Log first 10 missing files
             size_mismatch_count=len(size_mismatches),
         )
 

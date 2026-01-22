@@ -5,7 +5,7 @@
     "sftp": {
         "host": "sftp.boxouthealth.com",
         "port": 22,
-        "username": "Saras",
+        "username": "saras",
         "directory": "/saras"
     },
     "exports": {
