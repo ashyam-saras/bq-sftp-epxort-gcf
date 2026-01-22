@@ -61,10 +61,61 @@ bq-sftp-export/
 
 ## Configuration
 
-Configuration can be loaded from:
-1. JSON config file (via `CONFIG_PATH` or argument)
+### Two Separate Configs: Airflow vs Cloud Run
+
+This system uses **two independent configurations** that serve different purposes:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              AIRFLOW                                         │
+│  Source: SFTP_EXPORT_CONFIG variable (or config file)                       │
+│                                                                              │
+│  Uses these fields:                                                          │
+│  • gcs_bucket        → Where to export BQ data                              │
+│  • cloud_run_url     → Cloud Run service URL to call                        │
+│  • exports.*.query   → BQ queries to run                                    │
+│                                                                              │
+│  What Airflow sends to Cloud Run (HTTP POST):                               │
+│  { "export_name": "...", "gcs_path": "gs://..." }                           │
+│  (Does NOT send SFTP credentials)                                           │
+└──────────────────────────────────┬──────────────────────────────────────────┘
+                                   │
+                                   ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                            CLOUD RUN                                         │
+│  Source: CONFIG_PATH file + SFTP_* environment variable overrides           │
+│                                                                              │
+│  Uses these fields:                                                          │
+│  • sftp.host         → SFTP server to connect to                            │
+│  • sftp.username     → SFTP credentials                                     │
+│  • sftp.password     → SFTP credentials (use env var, not in file!)         │
+│  • sftp.directory    → Where to upload files                                │
+│                                                                              │
+│  Environment variables override config file values:                          │
+│  SFTP_HOST, SFTP_USERNAME, SFTP_PASSWORD, SFTP_DIRECTORY                    │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+| Config Field | Used By | Purpose |
+|--------------|---------|---------|
+| `gcs_bucket` | Airflow | GCS bucket for BQ exports |
+| `cloud_run_url` | Airflow | URL to call for transfers |
+| `exports.*.query` | Airflow | BigQuery SQL queries |
+| `sftp.*` | Cloud Run | SFTP connection details |
+| `gcs.expiration_days` | Cloud Run | (Optional) GCS lifecycle |
+
+**Important:** SFTP credentials are only used by Cloud Run. Airflow just triggers the transfer and passes the GCS path. Set `SFTP_PASSWORD` as a Cloud Run environment variable (not in config file) for security.
+
+---
+
+### Cloud Run Config Loading
+
+Cloud Run loads configuration with this priority:
+1. JSON config file (via `CONFIG_PATH` env var, default: `configs/exports.json`)
 2. `EXPORT_CONFIG` environment variable (full JSON)
 3. Individual environment variables (`SFTP_HOST`, `SFTP_USERNAME`, etc.)
+
+**Environment variables always override** config file values for SFTP settings.
 
 ### Config File Example (`configs/exports.json`)
 
@@ -276,10 +327,24 @@ python -m src.sftp clear -f --host sftp.example.com --username user --password p
 
 ### 1. Create Airflow Variable
 
-Store the config JSON in an Airflow Variable named `sftp_export_config`:
+Create an Airflow Variable named `SFTP_EXPORT_CONFIG` with the following structure:
+
+```json
+{
+  "gcs_bucket": "your-gcs-bucket",
+  "cloud_run_url": "https://your-service.run.app",
+  "exports": {
+    "product_data": {
+      "query": "SELECT * FROM `project.dataset.table` WHERE DATE(created_at) = '{date}'"
+    }
+  }
+}
+```
+
+**Note:** Airflow config only needs `gcs_bucket`, `cloud_run_url`, and `exports`. SFTP credentials are configured separately in Cloud Run.
 
 ```bash
-airflow variables set sftp_export_config "$(cat configs/exports.json)"
+airflow variables set SFTP_EXPORT_CONFIG '{"gcs_bucket":"...","cloud_run_url":"...","exports":{...}}'
 ```
 
 ### 2. Create HTTP Connection
