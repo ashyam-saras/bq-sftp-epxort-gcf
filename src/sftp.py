@@ -146,7 +146,7 @@ def upload_from_gcs_parallel(
 
     # Set default thread count if not specified
     if max_workers is None:
-        max_workers = min(20, (os.cpu_count() or 1) * 4)  # Cap at reasonable limit
+        max_workers = 3  # Keep low to avoid SFTP server connection limits
 
     total_files = len(file_mappings)
     successful_files = []

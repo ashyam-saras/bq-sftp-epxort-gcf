@@ -120,7 +120,7 @@ def transfer_gcs_to_sftp(
     sftp_config: Dict[str, Any],
     gcs_path: str,
     export_name: str,
-    max_workers: int = 10,
+    max_workers: int = 3,  # Keep low to avoid SFTP connection limits
 ) -> Dict[str, Any]:
     """
     Transfer files from GCS to SFTP.
