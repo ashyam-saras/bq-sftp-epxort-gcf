@@ -75,8 +75,45 @@ def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
                 "or individual SFTP_* environment variables."
             )
 
+    # Merge environment variable overrides (env vars take precedence)
+    config = _merge_env_overrides(config)
+    
     # Validate config
     _validate_config(config)
+    return config
+
+
+def _merge_env_overrides(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Merge environment variable overrides into config."""
+    # Ensure sftp section exists
+    if "sftp" not in config:
+        config["sftp"] = {}
+    
+    # SFTP overrides from env vars
+    env_overrides = {
+        "host": os.environ.get("SFTP_HOST"),
+        "port": os.environ.get("SFTP_PORT"),
+        "username": os.environ.get("SFTP_USERNAME"),
+        "password": os.environ.get("SFTP_PASSWORD"),
+        "directory": os.environ.get("SFTP_DIRECTORY"),
+    }
+    
+    for key, value in env_overrides.items():
+        if value is not None:
+            if key == "port":
+                config["sftp"][key] = int(value)
+            else:
+                config["sftp"][key] = value
+    
+    # GCS overrides
+    if "gcs" not in config:
+        config["gcs"] = {}
+    
+    if os.environ.get("GCS_BUCKET"):
+        config["gcs"]["bucket"] = os.environ.get("GCS_BUCKET")
+    if os.environ.get("GCS_EXPIRATION_DAYS"):
+        config["gcs"]["expiration_days"] = int(os.environ.get("GCS_EXPIRATION_DAYS"))
+    
     return config
 
 
