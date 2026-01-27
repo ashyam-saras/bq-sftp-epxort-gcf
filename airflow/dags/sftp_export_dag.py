@@ -17,17 +17,12 @@ Supported placeholders in queries:
 Note: Use BigQuery date functions like DATE_SUB('{ds}', INTERVAL 7 DAY) for lookback queries.
 
 Manual Runs with Query Override (Trigger DAG with config):
-Each export has a {export_name}_query param:
-- "__DEFAULT__" (default): Use query from config (normal scheduled behavior)
-- "" (empty string): Skip this export entirely
-- Any SQL query: Use this query instead of config
+Each export has a {export_name}_query param pre-filled with the config query.
+- Modify the query as needed for one-time runs
+- Set to empty string to skip that export entirely
 
-Example config for one-time backfill of only account_overview_sales:
-{
-    "account_overview_sales_query": "SELECT * FROM `...` WHERE date BETWEEN '2025-01-01' AND CURRENT_DATE()",
-    "Product_query": "",
-    "traffic_analysis_query": ""
-}
+Example: To backfill only account_overview_sales from Jan 1st, modify its query
+and set the other exports to empty string.
 
 Backfilling:
 - CLI: airflow dags backfill sftp_export -s 2025-01-01 -e 2025-01-07
@@ -186,13 +181,12 @@ def build_dag_params(exports: dict) -> dict:
     from airflow.models.param import Param
 
     params = {}
-    for export_name in exports:
+    for export_name, export_config in exports.items():
+        default_query = export_config.get("query", "")
         params[f"{export_name}_query"] = Param(
-            default="__DEFAULT__",
+            default=default_query,
             type="string",
-            description=f"Query override for {export_name}. "
-            f"Leave as __DEFAULT__ to use config query. "
-            f"Set to empty string to skip this export.",
+            description=f"Query for {export_name}. Set to empty string to skip this export.",
         )
     return params
 
@@ -246,22 +240,17 @@ def sftp_export():
             data_interval_end = context["data_interval_end"]
             params = context.get("params", {})
 
-            # Check for query override in params
+            # Check for query in params
             param_key = f"{export_name}_query"
-            query_param = params.get(param_key, "__DEFAULT__")
+            query_param = params.get(param_key, export_config["query"])
 
             # If param is empty string, skip this export
             if query_param == "":
                 print(f"=== Skipping Export: {export_name} (empty query param) ===")
                 return None
 
-            # Determine which query to use
-            if query_param == "__DEFAULT__":
-                base_query = export_config["query"]
-                print(f"=== Export: {export_name} (using config query) ===")
-            else:
-                base_query = query_param
-                print(f"=== Export: {export_name} (using OVERRIDE query) ===")
+            base_query = query_param
+            print(f"=== Export: {export_name} ===")
 
             print(f"ds (data interval start date): {ds}")
             print(f"data_interval_start: {data_interval_start}")
