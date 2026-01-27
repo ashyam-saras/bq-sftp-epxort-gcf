@@ -16,6 +16,19 @@ Supported placeholders in queries:
 
 Note: Use BigQuery date functions like DATE_SUB('{ds}', INTERVAL 7 DAY) for lookback queries.
 
+Manual Runs with Query Override (Trigger DAG with config):
+Each export has a {export_name}_query param:
+- "__DEFAULT__" (default): Use query from config (normal scheduled behavior)
+- "" (empty string): Skip this export entirely
+- Any SQL query: Use this query instead of config
+
+Example config for one-time backfill of only account_overview_sales:
+{
+    "account_overview_sales_query": "SELECT * FROM `...` WHERE date BETWEEN '2025-01-01' AND CURRENT_DATE()",
+    "Product_query": "",
+    "traffic_analysis_query": ""
+}
+
 Backfilling:
 - CLI: airflow dags backfill sftp_export -s 2025-01-01 -e 2025-01-07
 - UI: Trigger DAG with specific execution date
@@ -168,6 +181,27 @@ def build_export_query(
 # =============================================================================
 
 
+def build_dag_params(exports: dict) -> dict:
+    """Build dynamic params for each export query."""
+    from airflow.models.param import Param
+
+    params = {}
+    for export_name in exports:
+        params[f"{export_name}_query"] = Param(
+            default="__DEFAULT__",
+            type="string",
+            description=f"Query override for {export_name}. "
+            f"Leave as __DEFAULT__ to use config query. "
+            f"Set to empty string to skip this export.",
+        )
+    return params
+
+
+# Load config at parse time for params
+_config = get_config()
+_exports = _config.get("exports", {})
+
+
 @dag(
     dag_id="boxout_sftp_export",
     description="Export BigQuery data to SFTP via GCS",
@@ -183,6 +217,7 @@ def build_export_query(
     },
     tags=["sftp", "export", "bigquery"],
     doc_md=__doc__,
+    params=build_dag_params(_exports),
 )
 def sftp_export():
     """Main DAG definition using TaskFlow API."""
@@ -202,22 +237,39 @@ def sftp_export():
             export_config: dict,
             gcs_bucket: str,
             **context,
-        ) -> dict:
+        ) -> dict | None:
             """Export data from BigQuery to GCS."""
             # Get runtime context
             ds = context["ds"]
             ds_nodash = context["ds_nodash"]
             data_interval_start = context["data_interval_start"]
             data_interval_end = context["data_interval_end"]
+            params = context.get("params", {})
 
-            print(f"=== Export: {export_name} ===")
+            # Check for query override in params
+            param_key = f"{export_name}_query"
+            query_param = params.get(param_key, "__DEFAULT__")
+
+            # If param is empty string, skip this export
+            if query_param == "":
+                print(f"=== Skipping Export: {export_name} (empty query param) ===")
+                return None
+
+            # Determine which query to use
+            if query_param == "__DEFAULT__":
+                base_query = export_config["query"]
+                print(f"=== Export: {export_name} (using config query) ===")
+            else:
+                base_query = query_param
+                print(f"=== Export: {export_name} (using OVERRIDE query) ===")
+
             print(f"ds (data interval start date): {ds}")
             print(f"data_interval_start: {data_interval_start}")
             print(f"data_interval_end: {data_interval_end}")
 
             # Resolve placeholders in query
             resolved_query = resolve_placeholders(
-                query=export_config["query"],
+                query=base_query,
                 ds=ds,
                 ds_nodash=ds_nodash,
                 data_interval_start=data_interval_start,
@@ -252,8 +304,12 @@ def sftp_export():
             }
 
         @task(execution_timeout=timedelta(minutes=45))
-        def transfer_to_sftp(export_result: dict, cloud_run_url: str) -> dict:
+        def transfer_to_sftp(export_result: dict | None, cloud_run_url: str) -> dict | None:
             """Trigger Cloud Run to transfer files from GCS to SFTP."""
+            if export_result is None:
+                print("Skipping transfer (export was skipped)")
+                return None
+
             payload = {
                 "export_name": export_result["export_name"],
                 "gcs_path": export_result["gcs_path"],
@@ -279,8 +335,12 @@ def sftp_export():
             return {**export_result, "transfer_result": result}
 
         @task(execution_timeout=timedelta(minutes=10))
-        def verify_sync(transfer_result: dict, cloud_run_url: str) -> dict:
+        def verify_sync(transfer_result: dict | None, cloud_run_url: str) -> dict | None:
             """Verify GCS and SFTP are in sync."""
+            if transfer_result is None:
+                print("Skipping verification (export was skipped)")
+                return None
+
             payload = {
                 "export_name": transfer_result["export_name"],
                 "gcs_path": transfer_result["gcs_path"],
