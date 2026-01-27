@@ -187,8 +187,8 @@ def build_dag_params(exports: dict) -> dict:
         default_query = export_config.get("query", "")
         params[f"{export_name}_query"] = Param(
             default=default_query,
-            type="string",
-            description=f"Query for {export_name}. Set to empty string to skip this export.",
+            type=["null", "string"],  # Allow empty/null values
+            description=f"Query for {export_name}. Clear field to skip this export.",
         )
     return params
 
@@ -246,8 +246,8 @@ def sftp_export():
             param_key = f"{export_name}_query"
             query_param = params.get(param_key, export_config["query"])
 
-            # If param is empty string, skip this export
-            if query_param == "":
+            # If param is empty/None, skip this export
+            if not query_param:
                 print(f"=== Skipping Export: {export_name} (empty query param) ===")
                 return None
 
