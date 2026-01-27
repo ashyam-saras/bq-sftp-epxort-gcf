@@ -14,7 +14,8 @@ Supported placeholders in queries:
 - {data_interval_start}   - Data interval start (YYYY-MM-DD HH:MM:SS)
 - {data_interval_end}     - Data interval end (YYYY-MM-DD HH:MM:SS)
 
-Note: Use BigQuery date functions like DATE_SUB('{ds}', INTERVAL 7 DAY) for lookback queries.
+Note: GCS folder is named by data_interval_end date (YYYYMMDD) to match query filter dates.
+Use BigQuery date functions like DATE_SUB('{ds}', INTERVAL 7 DAY) for lookback queries.
 
 Manual Runs with Query Override (Trigger DAG with config):
 Each export has a {export_name}_query param pre-filled with the config query.
@@ -152,13 +153,13 @@ def build_export_query(
     query: str,
     gcs_bucket: str,
     export_name: str,
-    ds_nodash: str,
+    folder_date: str,
     format: str,
     compression: str,
 ) -> str:
     """Build BigQuery EXPORT DATA statement."""
     extension = get_file_extension(format, compression)
-    gcs_uri = f"gs://{gcs_bucket}/{export_name}/{ds_nodash}/{export_name}-*.{extension}"
+    gcs_uri = f"gs://{gcs_bucket}/{export_name}/{folder_date}/{export_name}-*.{extension}"
 
     return f"""EXPORT DATA OPTIONS(
     uri='{gcs_uri}',
@@ -265,12 +266,15 @@ def sftp_export():
                 data_interval_end=data_interval_end,
             )
 
+            # Use data_interval_end for folder naming (matches query filter date)
+            folder_date = data_interval_end.strftime("%Y%m%d")
+
             # Build EXPORT DATA statement
             export_sql = build_export_query(
                 query=resolved_query,
                 gcs_bucket=gcs_bucket,
                 export_name=export_name,
-                ds_nodash=ds_nodash,
+                folder_date=folder_date,
                 format=export_config.get("format", "CSV"),
                 compression=export_config.get("compression", "GZIP"),
             )
@@ -282,14 +286,14 @@ def sftp_export():
             hook = BigQueryHook(gcp_conn_id="google_cloud_default", use_legacy_sql=False)
             hook.run_query(sql=export_sql, use_legacy_sql=False)
 
-            gcs_path = f"gs://{gcs_bucket}/{export_name}/{ds_nodash}/"
+            gcs_path = f"gs://{gcs_bucket}/{export_name}/{folder_date}/"
             print(f"Export complete. Files at: {gcs_path}")
 
             return {
                 "export_name": export_name,
                 "gcs_path": gcs_path,
                 "ds": ds,
-                "ds_nodash": ds_nodash,
+                "folder_date": folder_date,
             }
 
         @task(execution_timeout=timedelta(minutes=45))
