@@ -83,7 +83,7 @@ def test_bq_export(export_name: str, date: str, config_path: str = "configs/expo
     if compression.upper() == "GZIP":
         ext += ".gz"
 
-    gcs_uri = f"gs://{gcs_bucket}/{export_name}/{ds_nodash}/{export_name}-{ds_nodash}-*.{ext}"
+    gcs_uri = f"gs://{gcs_bucket}/{export_name}/{ds_nodash}/{export_name}_{ds_nodash}-*.{ext}"
 
     # Build EXPORT DATA query
     export_sql = f"""EXPORT DATA OPTIONS(

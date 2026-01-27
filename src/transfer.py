@@ -46,18 +46,25 @@ def _build_sftp_filename(original_filename: str, export_name: str, date: Optiona
     Build SFTP filename in format: {export_name}_{date}-{part}.{ext}
     
     Args:
-        original_filename: Original GCS filename (e.g., "Product-20250108-000000000000.csv.gz")
+        original_filename: Original GCS filename (e.g., "Product_20250108-000000000000.csv.gz")
         export_name: Name of the export (e.g., "Product")
         date: Date string in YYYYMMDD format
     
     Returns:
-        Renamed filename (e.g., "Product_20250108-000000000000.csv.gz")
+        Filename for SFTP (e.g., "Product_20250108-000000000000.csv.gz")
     """
     if not date:
         # No date found, return original filename
         return original_filename
     
-    # New pattern: {name}-{date}-{part}.{ext}
+    # Current pattern: {name}_{date}-{part}.{ext} (already in final format)
+    # Example: Product_20250108-000000000000.csv.gz -> no change needed
+    match = re.match(r'^(.+?)_(\d{8})-(\d+)(\..*)?$', original_filename)
+    if match:
+        # Already in correct format, return as-is
+        return original_filename
+    
+    # Legacy pattern: {name}-{date}-{part}.{ext} (hyphen before date)
     # Example: Product-20250108-000000000000.csv.gz -> Product_20250108-000000000000.csv.gz
     match = re.match(r'^(.+?)-(\d{8})-(\d+)(\..*)?$', original_filename)
     if match:
