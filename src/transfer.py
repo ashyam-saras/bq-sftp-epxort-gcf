@@ -3,10 +3,9 @@ GCS to SFTP transfer logic.
 """
 
 import fnmatch
-import re
 import time
 from pathlib import PurePosixPath
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 from google.cloud import storage
 
@@ -23,49 +22,6 @@ def _parse_gcs_url(url: str) -> Tuple[str, str]:
     bucket = parts[0]
     prefix = parts[1] if len(parts) > 1 else ""
     return bucket, prefix
-
-
-def _extract_date_from_gcs_path(gcs_path: str) -> Optional[str]:
-    """
-    Extract date from GCS path.
-    
-    Expects paths like: gs://bucket/export_name/20250108/ or gs://bucket/export_name/2025-01-08/
-    
-    Returns:
-        Date string (YYYYMMDD format) or None if not found
-    """
-    # Match YYYYMMDD or YYYY-MM-DD patterns
-    match = re.search(r'/(\d{4})-?(\d{2})-?(\d{2})/?', gcs_path)
-    if match:
-        return f"{match.group(1)}{match.group(2)}{match.group(3)}"
-    return None
-
-
-def _build_sftp_filename(original_filename: str, export_name: str, date: Optional[str]) -> str:
-    """
-    Build SFTP filename. New exports already use final format, so usually no change needed.
-    
-    Args:
-        original_filename: GCS filename (e.g., "Product_20250108-000000000000.csv.gz")
-        export_name: Name of the export
-        date: Date string in YYYYMMDD format
-    
-    Returns:
-        Filename for SFTP (usually same as original)
-    """
-    # New format: {name}_{date}-{shard}.ext - already correct, no change needed
-    if re.match(r'^.+_\d{8}-\d+\.', original_filename):
-        return original_filename
-    
-    # Legacy: {name}-{shard}.ext (no date) - add date
-    if date:
-        match = re.match(r'^(.+?)-(\d+)(\..*)?$', original_filename)
-        if match:
-            part = match.group(2)
-            ext = match.group(3) or ""
-            return f"{export_name}_{date}-{part}{ext}"
-    
-    return original_filename
 
 
 def _list_gcs_files(
@@ -156,25 +112,15 @@ def transfer_gcs_to_sftp(
         total_mb=f"{total_bytes / (1024 * 1024):.2f}",
     )
 
-    # Extract date from GCS path for filename formatting
-    date_str = _extract_date_from_gcs_path(gcs_path)
-    if date_str:
-        cprint(f"Extracted date from GCS path", severity="INFO", date=date_str)
-    
     # Build file mappings: (gcs_uri, remote_filename)
     file_mappings = []
     transferred_files = []
 
     for blob in blobs:
         gcs_uri = f"gs://{blob.bucket.name}/{blob.name}"
-        original_filename = blob.name.split("/")[-1]
-        # Rename to: {export_name}_{date}-{part}.csv.gz
-        remote_filename = _build_sftp_filename(original_filename, export_name, date_str)
+        remote_filename = blob.name.split("/")[-1]  # GCS filename = SFTP filename
         file_mappings.append((gcs_uri, remote_filename))
         transferred_files.append(remote_filename)
-        
-        if original_filename != remote_filename:
-            cprint(f"File rename", severity="DEBUG", original=original_filename, renamed=remote_filename)
 
     # Upload to SFTP
     if len(file_mappings) == 1:
