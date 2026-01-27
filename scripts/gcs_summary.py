@@ -224,6 +224,8 @@ def _print_table(summaries: Dict[str, Any]) -> None:
 
 
 def main():
+    import os
+    
     parser = argparse.ArgumentParser(description="GCS/SFTP export summary")
     
     # GCS options
@@ -233,7 +235,7 @@ def main():
     parser.add_argument("--sftp-host", help="SFTP host")
     parser.add_argument("--sftp-port", type=int, default=22, help="SFTP port (default: 22)")
     parser.add_argument("--sftp-user", help="SFTP username")
-    parser.add_argument("--sftp-pass", help="SFTP password")
+    parser.add_argument("--sftp-pass", help="SFTP password (or set SFTP_PASSWORD env var)")
     parser.add_argument("--sftp-dir", help="SFTP directory")
     
     # Common options
@@ -252,12 +254,13 @@ def main():
         gcs_summaries = get_gcs_summary(args.bucket, args.export)
     
     if args.sftp_host:
-        if not all([args.sftp_user, args.sftp_pass, args.sftp_dir]):
-            parser.error("--sftp-user, --sftp-pass, and --sftp-dir are required with --sftp-host")
+        sftp_pass = args.sftp_pass or os.environ.get("SFTP_PASSWORD")
+        if not all([args.sftp_user, sftp_pass, args.sftp_dir]):
+            parser.error("--sftp-user, --sftp-dir, and password (--sftp-pass or SFTP_PASSWORD env) are required")
         sftp_summaries = get_sftp_summary(
             args.sftp_host,
             args.sftp_user,
-            args.sftp_pass,
+            sftp_pass,
             args.sftp_dir,
             args.sftp_port,
             args.export,
