@@ -1,6 +1,10 @@
 {
   "files.exclude": {
     "**/__pycache__": true,
-    "**/__pycache__.*": true
+    "**/__pycache__.*": true,
+    "**/.pytest_cache": true,
+    "**/.pytest_cache.*": true,
+    "**/.specstory": true,
+    "**/.specstory.*": true
   }
 }

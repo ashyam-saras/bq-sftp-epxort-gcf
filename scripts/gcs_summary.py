@@ -1,15 +1,23 @@
 #!/usr/bin/env python3
 """
-GCS bucket summary - shows statistics for each export.
+Storage summary - shows statistics for exports in GCS and/or SFTP.
 
 Usage:
+    # GCS only
     python -m scripts.gcs_summary --bucket boxout-sftp-transfer
-    python -m scripts.gcs_summary --bucket boxout-sftp-transfer --export Product
+    
+    # SFTP only
+    python -m scripts.gcs_summary --sftp-host sftp.example.com --sftp-user user --sftp-pass pass --sftp-dir /uploads
+    
+    # Both GCS and SFTP
+    python -m scripts.gcs_summary --bucket boxout-sftp-transfer --sftp-host sftp.example.com --sftp-user user --sftp-pass pass --sftp-dir /uploads
 """
 
 import argparse
+import re
 from collections import defaultdict
-from typing import Dict, List, Any
+from datetime import datetime
+from typing import Dict, List, Any, Optional
 
 from google.cloud import storage
 
@@ -23,12 +31,21 @@ def format_size(size_bytes: int) -> str:
     return f"{size_bytes:.1f} PB"
 
 
-def get_bucket_summary(bucket_name: str, export_filter: str = None) -> Dict[str, Any]:
+def extract_export_and_date(filename: str) -> tuple:
     """
-    Get summary statistics for each export in the bucket.
-    
-    Returns dict with stats per export.
+    Extract export name and date from filename.
+    Expects format: {export_name}_{date}-{shard}.csv.gz
+    Example: Product_20260127-000000000000.csv.gz -> (Product, 20260127)
     """
+    # Pattern: name_YYYYMMDD-shard.ext
+    match = re.match(r'^(.+?)_(\d{8})-\d+\.', filename)
+    if match:
+        return match.group(1), match.group(2)
+    return None, None
+
+
+def get_gcs_summary(bucket_name: str, export_filter: str = None) -> Dict[str, Any]:
+    """Get summary statistics for each export in GCS bucket."""
     client = storage.Client()
     bucket = client.bucket(bucket_name)
     
@@ -38,7 +55,6 @@ def get_bucket_summary(bucket_name: str, export_filter: str = None) -> Dict[str,
     print(f"Scanning gs://{bucket_name}/...")
     
     for blob in bucket.list_blobs():
-        # Skip "directory" markers
         if blob.name.endswith("/"):
             continue
         
@@ -49,25 +65,71 @@ def get_bucket_summary(bucket_name: str, export_filter: str = None) -> Dict[str,
         export_name = parts[0]
         date_folder = parts[1]
         
-        # Filter if specified
         if export_filter and export_name != export_filter:
             continue
         
         exports[export_name][date_folder].append({
-            "name": blob.name,
+            "name": blob.name.split("/")[-1],
             "size": blob.size or 0,
         })
     
-    # Calculate stats
+    return _calculate_stats(exports)
+
+
+def get_sftp_summary(
+    host: str, 
+    username: str, 
+    password: str, 
+    directory: str,
+    port: int = 22,
+    export_filter: str = None
+) -> Dict[str, Any]:
+    """Get summary statistics for exports on SFTP server."""
+    import paramiko
+    
+    print(f"Scanning sftp://{host}{directory}/...")
+    
+    transport = paramiko.Transport((host, port))
+    transport.connect(username=username, password=password)
+    sftp = paramiko.SFTPClient.from_transport(transport)
+    
+    # Structure: {export_name: {date: [files]}}
+    exports: Dict[str, Dict[str, List]] = defaultdict(lambda: defaultdict(list))
+    
+    try:
+        for attr in sftp.listdir_attr(directory):
+            # Skip directories
+            if attr.st_mode and (attr.st_mode & 0o40000):
+                continue
+            
+            filename = attr.filename
+            export_name, date_str = extract_export_and_date(filename)
+            
+            if not export_name or not date_str:
+                continue
+            
+            if export_filter and export_name != export_filter:
+                continue
+            
+            exports[export_name][date_str].append({
+                "name": filename,
+                "size": attr.st_size or 0,
+            })
+    finally:
+        sftp.close()
+        transport.close()
+    
+    return _calculate_stats(exports)
+
+
+def _calculate_stats(exports: Dict[str, Dict[str, List]]) -> Dict[str, Any]:
+    """Calculate summary statistics from exports dict."""
     summaries = {}
     for export_name, dates in sorted(exports.items()):
         sorted_dates = sorted(dates.keys())
         
         total_files = sum(len(files) for files in dates.values())
         total_size = sum(f["size"] for files in dates.values() for f in files)
-        
-        files_per_date = [len(files) for files in dates.values()]
-        sizes_per_file = [f["size"] for files in dates.values() for f in files]
         
         summaries[export_name] = {
             "oldest_date": sorted_dates[0] if sorted_dates else None,
@@ -82,16 +144,62 @@ def get_bucket_summary(bucket_name: str, export_filter: str = None) -> Dict[str,
     return summaries
 
 
-def print_summary(summaries: Dict[str, Any]) -> None:
+def print_summary(gcs_summaries: Dict[str, Any], sftp_summaries: Dict[str, Any] = None) -> None:
     """Print formatted summary table."""
+    
+    if gcs_summaries:
+        print("\n=== GCS Summary ===")
+        _print_table(gcs_summaries)
+    
+    if sftp_summaries:
+        print("\n=== SFTP Summary ===")
+        _print_table(sftp_summaries)
+    
+    # Comparison if both
+    if gcs_summaries and sftp_summaries:
+        print("\n=== GCS vs SFTP Comparison ===")
+        all_exports = set(gcs_summaries.keys()) | set(sftp_summaries.keys())
+        
+        print(f"\n{'Export':<40} {'GCS Files':>10} {'SFTP Files':>11} {'GCS Size':>12} {'SFTP Size':>12} {'Status':<10}")
+        print("-" * 100)
+        
+        for export in sorted(all_exports):
+            gcs = gcs_summaries.get(export, {})
+            sftp = sftp_summaries.get(export, {})
+            
+            gcs_files = gcs.get("total_files", 0)
+            sftp_files = sftp.get("total_files", 0)
+            gcs_size = gcs.get("total_size", 0)
+            sftp_size = sftp.get("total_size", 0)
+            
+            if gcs_files == sftp_files and gcs_size == sftp_size:
+                status = "OK"
+            elif gcs_files == 0:
+                status = "GCS empty"
+            elif sftp_files == 0:
+                status = "SFTP empty"
+            else:
+                status = "MISMATCH"
+            
+            print(
+                f"{export:<40} "
+                f"{gcs_files:>10} "
+                f"{sftp_files:>11} "
+                f"{format_size(gcs_size):>12} "
+                f"{format_size(sftp_size):>12} "
+                f"{status:<10}"
+            )
+        print()
+
+
+def _print_table(summaries: Dict[str, Any]) -> None:
+    """Print a single summary table."""
     if not summaries:
         print("No exports found.")
         return
     
-    # Header
-    print()
-    print(f"{'Export':<45} {'Oldest':<10} {'Newest':<10} {'Dates':>6} {'Files':>7} {'Total Size':>12} {'Avg Files/Date':>14} {'Avg Size/File':>14}")
-    print("-" * 130)
+    print(f"\n{'Export':<40} {'Oldest':<10} {'Newest':<10} {'Dates':>6} {'Files':>7} {'Total Size':>12} {'Avg Files/Date':>14} {'Avg Size/File':>14}")
+    print("-" * 125)
     
     grand_total_files = 0
     grand_total_size = 0
@@ -101,7 +209,7 @@ def print_summary(summaries: Dict[str, Any]) -> None:
         grand_total_size += stats["total_size"]
         
         print(
-            f"{export_name:<45} "
+            f"{export_name:<40} "
             f"{stats['oldest_date'] or 'N/A':<10} "
             f"{stats['newest_date'] or 'N/A':<10} "
             f"{stats['num_dates']:>6} "
@@ -111,27 +219,60 @@ def print_summary(summaries: Dict[str, Any]) -> None:
             f"{format_size(stats['avg_size_per_file']):>14}"
         )
     
-    # Footer
-    print("-" * 130)
-    print(f"{'TOTAL':<45} {'':<10} {'':<10} {'':<6} {grand_total_files:>7} {format_size(grand_total_size):>12}")
-    print()
+    print("-" * 125)
+    print(f"{'TOTAL':<40} {'':<10} {'':<10} {'':<6} {grand_total_files:>7} {format_size(grand_total_size):>12}")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="GCS bucket export summary")
-    parser.add_argument("--bucket", "-b", required=True, help="GCS bucket name")
+    parser = argparse.ArgumentParser(description="GCS/SFTP export summary")
+    
+    # GCS options
+    parser.add_argument("--bucket", "-b", help="GCS bucket name")
+    
+    # SFTP options
+    parser.add_argument("--sftp-host", help="SFTP host")
+    parser.add_argument("--sftp-port", type=int, default=22, help="SFTP port (default: 22)")
+    parser.add_argument("--sftp-user", help="SFTP username")
+    parser.add_argument("--sftp-pass", help="SFTP password")
+    parser.add_argument("--sftp-dir", help="SFTP directory")
+    
+    # Common options
     parser.add_argument("--export", "-e", help="Filter to specific export name")
     parser.add_argument("--json", action="store_true", help="Output as JSON")
     
     args = parser.parse_args()
     
-    summaries = get_bucket_summary(args.bucket, args.export)
+    if not args.bucket and not args.sftp_host:
+        parser.error("At least one of --bucket or --sftp-host is required")
+    
+    gcs_summaries = None
+    sftp_summaries = None
+    
+    if args.bucket:
+        gcs_summaries = get_gcs_summary(args.bucket, args.export)
+    
+    if args.sftp_host:
+        if not all([args.sftp_user, args.sftp_pass, args.sftp_dir]):
+            parser.error("--sftp-user, --sftp-pass, and --sftp-dir are required with --sftp-host")
+        sftp_summaries = get_sftp_summary(
+            args.sftp_host,
+            args.sftp_user,
+            args.sftp_pass,
+            args.sftp_dir,
+            args.sftp_port,
+            args.export,
+        )
     
     if args.json:
         import json
-        print(json.dumps(summaries, indent=2))
+        result = {}
+        if gcs_summaries:
+            result["gcs"] = gcs_summaries
+        if sftp_summaries:
+            result["sftp"] = sftp_summaries
+        print(json.dumps(result, indent=2))
     else:
-        print_summary(summaries)
+        print_summary(gcs_summaries, sftp_summaries)
 
 
 if __name__ == "__main__":
