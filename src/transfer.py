@@ -5,7 +5,7 @@ GCS to SFTP transfer logic.
 import fnmatch
 import time
 from pathlib import PurePosixPath
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from google.cloud import storage
 

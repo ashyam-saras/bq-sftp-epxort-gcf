@@ -207,8 +207,7 @@ _exports = _config.get("exports", {})
     catchup=False,
     default_args={
         "owner": "data-engineering",
-        "retries": 2,
-        "retry_delay": timedelta(minutes=5),
+        "retries": 0,
         "on_failure_callback": send_slack_alert,
     },
     tags=["sftp", "export", "bigquery"],
@@ -313,14 +312,22 @@ def sftp_export():
             print(f"Calling Cloud Run: {cloud_run_url}/transfer")
             print(f"Payload: {json.dumps(payload)}")
 
-            response = requests.post(
-                f"{cloud_run_url}/transfer",
-                json=payload,
-                headers={"Content-Type": "application/json"},
-                timeout=1800,  # 30 minutes - must be less than Cloud Run timeout
-            )
-            response.raise_for_status()
-            result = response.json()
+            try:
+                response = requests.post(
+                    f"{cloud_run_url}/transfer",
+                    json=payload,
+                    headers={"Content-Type": "application/json"},
+                    timeout=1800,
+                )
+                print(f"Cloud Run response status: {response.status_code}")
+                print(f"Cloud Run response body: {response.text[:2000]}")
+                response.raise_for_status()
+                result = response.json()
+            except requests.exceptions.RequestException as e:
+                print(f"Cloud Run request failed: {e}")
+                if hasattr(e, "response") and e.response is not None:
+                    print(f"Error response body: {e.response.text[:2000]}")
+                raise
 
             if result.get("status") != "success":
                 raise Exception(f"Transfer failed: {result.get('message', 'Unknown error')}")
@@ -341,21 +348,30 @@ def sftp_export():
             }
 
             print(f"Calling Cloud Run: {cloud_run_url}/verify")
+            print(f"Payload: {json.dumps(payload)}")
 
-            response = requests.post(
-                f"{cloud_run_url}/verify",
-                json=payload,
-                headers={"Content-Type": "application/json"},
-                timeout=300,  # 5 minutes
-            )
-            response.raise_for_status()
-            result = response.json()
+            try:
+                response = requests.post(
+                    f"{cloud_run_url}/verify",
+                    json=payload,
+                    headers={"Content-Type": "application/json"},
+                    timeout=300,
+                )
+                print(f"Cloud Run response status: {response.status_code}")
+                print(f"Cloud Run response body: {response.text[:2000]}")
+                response.raise_for_status()
+                result = response.json()
+            except requests.exceptions.RequestException as e:
+                print(f"Cloud Run request failed: {e}")
+                if hasattr(e, "response") and e.response is not None:
+                    print(f"Error response body: {e.response.text[:2000]}")
+                raise
 
             if not result.get("in_sync"):
                 missing = result.get("missing_on_sftp", [])
                 raise Exception(f"Sync verification failed. Missing files: {missing}")
 
-            print(f"✅ Verification passed: {result.get('gcs_file_count')} files in sync")
+            print(f"Verification passed: {result.get('gcs_file_count')} files in sync")
             return result
 
         # Chain tasks within group
