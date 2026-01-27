@@ -84,7 +84,8 @@ def build_export_query(
     format='{format}',
     compression='{compression}',
     overwrite={str(overwrite).lower()},
-    header=true
+    header=true,
+    field_delimiter='|'
 ) AS
 {query}"""
     return export_sql

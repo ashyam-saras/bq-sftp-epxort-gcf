@@ -91,7 +91,8 @@ def test_bq_export(export_name: str, date: str, config_path: str = "configs/expo
     format='{fmt}',
     compression='{compression}',
     overwrite=true,
-    header=true
+    header=true,
+    field_delimiter='|'
 ) AS
 {query}"""
 

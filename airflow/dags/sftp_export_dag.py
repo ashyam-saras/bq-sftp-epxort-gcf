@@ -157,7 +157,8 @@ def build_export_query(
     format='{format}',
     compression='{compression}',
     overwrite=true,
-    header=true
+    header=true,
+    field_delimiter='|'
 ) AS
 {query}"""
 
