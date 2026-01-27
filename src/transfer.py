@@ -43,51 +43,29 @@ def _extract_date_from_gcs_path(gcs_path: str) -> Optional[str]:
 
 def _build_sftp_filename(original_filename: str, export_name: str, date: Optional[str]) -> str:
     """
-    Build SFTP filename in format: {export_name}_{date}-{part}.{ext}
+    Build SFTP filename. New exports already use final format, so usually no change needed.
     
     Args:
-        original_filename: Original GCS filename (e.g., "Product_20250108-000000000000.csv.gz")
-        export_name: Name of the export (e.g., "Product")
+        original_filename: GCS filename (e.g., "Product_20250108-000000000000.csv.gz")
+        export_name: Name of the export
         date: Date string in YYYYMMDD format
     
     Returns:
-        Filename for SFTP (e.g., "Product_20250108-000000000000.csv.gz")
+        Filename for SFTP (usually same as original)
     """
-    if not date:
-        # No date found, return original filename
+    # New format: {name}_{date}-{shard}.ext - already correct, no change needed
+    if re.match(r'^.+_\d{8}-\d+\.', original_filename):
         return original_filename
     
-    # Current pattern: {name}_{date}-{part}.{ext} (already in final format)
-    # Example: Product_20250108-000000000000.csv.gz -> no change needed
-    match = re.match(r'^(.+?)_(\d{8})-(\d+)(\..*)?$', original_filename)
-    if match:
-        # Already in correct format, return as-is
-        return original_filename
+    # Legacy: {name}-{shard}.ext (no date) - add date
+    if date:
+        match = re.match(r'^(.+?)-(\d+)(\..*)?$', original_filename)
+        if match:
+            part = match.group(2)
+            ext = match.group(3) or ""
+            return f"{export_name}_{date}-{part}{ext}"
     
-    # Legacy pattern: {name}-{date}-{part}.{ext} (hyphen before date)
-    # Example: Product-20250108-000000000000.csv.gz -> Product_20250108-000000000000.csv.gz
-    match = re.match(r'^(.+?)-(\d{8})-(\d+)(\..*)?$', original_filename)
-    if match:
-        part_number = match.group(3)
-        extension = match.group(4) or ""
-        return f"{export_name}_{date}-{part_number}{extension}"
-    
-    # Legacy pattern: {name}-{part}.{ext} (without date)
-    # Example: Product-000000000000.csv.gz -> Product_20250108-000000000000.csv.gz
-    match = re.match(r'^(.+?)-(\d+)(\..*)?$', original_filename)
-    if match:
-        part_number = match.group(2)
-        extension = match.group(3) or ""
-        return f"{export_name}_{date}-{part_number}{extension}"
-    
-    # Fallback: prepend date to original filename
-    name_parts = original_filename.rsplit('.', 2)  # Handle .csv.gz
-    if len(name_parts) >= 2:
-        base = name_parts[0]
-        ext = '.'.join(name_parts[1:])
-        return f"{base}_{date}.{ext}"
-    
-    return f"{original_filename}_{date}"
+    return original_filename
 
 
 def _list_gcs_files(
