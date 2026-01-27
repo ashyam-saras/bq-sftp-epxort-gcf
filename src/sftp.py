@@ -747,13 +747,15 @@ def delete_sftp_path(sftp_config: Dict[str, Any], path: str, recursive: bool = F
     return files_deleted, dirs_deleted
 
 
-def clear_sftp_directory(sftp_config: Dict[str, Any], directory: str) -> Tuple[int, int]:
+def clear_sftp_directory(sftp_config: Dict[str, Any], directory: str, use_shell: bool = True, quiet: bool = False) -> Tuple[int, int]:
     """
     Delete all contents of a directory without deleting the directory itself.
 
     Args:
         sftp_config: SFTP connection configuration
         directory: Directory to clear
+        use_shell: If True, use SSH shell command (faster). If False, use SFTP protocol (slower but safer).
+        quiet: If True, don't print each file being deleted
 
     Returns:
         Tuple of (files_deleted, dirs_deleted)
@@ -765,8 +767,57 @@ def clear_sftp_directory(sftp_config: Dict[str, Any], directory: str) -> Tuple[i
     username = sftp_config["username"]
     password = sftp_config["password"]
 
+    # First, count what we're deleting
     transport, sftp = create_sftp_connection(host, port, username, password)
+    
+    try:
+        # Check directory exists
+        try:
+            attr = sftp.stat(directory)
+            if not stat.S_ISDIR(attr.st_mode):
+                raise NotADirectoryError(f"Not a directory: {directory}")
+        except FileNotFoundError:
+            raise FileNotFoundError(f"Directory not found: {directory}")
 
+        # Count files before deletion
+        entries = sftp.listdir(directory)
+        file_count = len(entries)
+        
+        if file_count == 0:
+            return 0, 0
+
+    finally:
+        sftp.close()
+        transport.close()
+
+    # Use SSH shell command for fast bulk delete
+    if use_shell:
+        try:
+            ssh = paramiko.SSHClient()
+            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            ssh.connect(host, port=port, username=username, password=password)
+            
+            # Use rm -rf to delete all contents (but not the directory itself)
+            cmd = f'rm -rf "{directory}"/* "{directory}"/.[!.]* "{directory}"/..?* 2>/dev/null; true'
+            stdin, stdout, stderr = ssh.exec_command(cmd)
+            exit_status = stdout.channel.recv_exit_status()
+            
+            ssh.close()
+            
+            if not quiet:
+                print(f"  Deleted {file_count} items via shell command")
+            
+            return file_count, 0  # We don't track dirs vs files in shell mode
+            
+        except Exception as e:
+            # Fall back to SFTP if shell fails
+            if not quiet:
+                print(f"  Shell command failed ({e}), falling back to SFTP...")
+            use_shell = False
+
+    # Fallback: Use SFTP protocol (slower, one call per file)
+    transport, sftp = create_sftp_connection(host, port, username, password)
+    
     files_deleted = 0
     dirs_deleted = 0
 
@@ -786,22 +837,15 @@ def clear_sftp_directory(sftp_config: Dict[str, Any], directory: str) -> Tuple[i
             # Delete the directory itself
             sftp.rmdir(target_path)
             dirs_deleted += 1
-            print(f"  Deleted directory: {target_path}")
+            if not quiet:
+                print(f"  Deleted directory: {target_path}")
         else:
             sftp.remove(target_path)
             files_deleted += 1
-            print(f"  Deleted file: {target_path}")
+            if not quiet:
+                print(f"  Deleted file: {target_path}")
 
     try:
-        # Check directory exists
-        try:
-            attr = sftp.stat(directory)
-            if not stat.S_ISDIR(attr.st_mode):
-                raise NotADirectoryError(f"Not a directory: {directory}")
-        except FileNotFoundError:
-            raise FileNotFoundError(f"Directory not found: {directory}")
-
-        # Delete all contents
         for entry in sftp.listdir_attr(directory):
             entry_path = f"{directory.rstrip('/')}/{entry.filename}"
             _delete_recursive(entry_path)
@@ -865,6 +909,8 @@ def main():
     clear_parser = subparsers.add_parser("clear", help="Delete all contents of a directory (keeps directory)")
     add_sftp_args(clear_parser)
     clear_parser.add_argument("-f", "--force", action="store_true", help="Skip confirmation prompt")
+    clear_parser.add_argument("-q", "--quiet", action="store_true", help="Don't print each file being deleted")
+    clear_parser.add_argument("--slow", action="store_true", help="Use SFTP protocol instead of shell (slower but safer)")
 
     args = parser.parse_args()
 
@@ -989,7 +1035,12 @@ def main():
 
         try:
             print(f"Clearing {directory}...")
-            files, dirs = clear_sftp_directory(sftp_config, directory)
+            files, dirs = clear_sftp_directory(
+                sftp_config, 
+                directory, 
+                use_shell=not args.slow,
+                quiet=args.quiet
+            )
             print(f"✅ Deleted {files} file(s) and {dirs} directory(ies)")
         except FileNotFoundError as e:
             print(f"❌ {str(e)}")
