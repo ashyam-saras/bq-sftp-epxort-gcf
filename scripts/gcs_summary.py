@@ -21,9 +21,15 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Any, Optional
 
-# Load .env file
+# Load .env file (but preserve existing GOOGLE_APPLICATION_CREDENTIALS to use gcloud auth)
 from dotenv import load_dotenv
+_gcp_creds = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
 load_dotenv(Path(__file__).parent.parent / ".env")
+if _gcp_creds:
+    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = _gcp_creds
+elif "GOOGLE_APPLICATION_CREDENTIALS" in os.environ:
+    # Remove invalid key from .env, use gcloud default instead
+    del os.environ["GOOGLE_APPLICATION_CREDENTIALS"]
 
 from google.cloud import storage
 
