@@ -55,6 +55,8 @@ def verify_gcs_sftp_sync(
     cprint(
         f"Expecting {len(gcs_files)} files on SFTP",
         severity="INFO",
+        export_name=export_name,
+        gcs_path=gcs_path,
         date_extracted=date_str,
         sample_expected=list(gcs_files)[:3] if gcs_files else [],
     )

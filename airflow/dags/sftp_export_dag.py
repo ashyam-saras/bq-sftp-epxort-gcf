@@ -159,7 +159,8 @@ def build_export_query(
 ) -> str:
     """Build BigQuery EXPORT DATA statement."""
     extension = get_file_extension(format, compression)
-    gcs_uri = f"gs://{gcs_bucket}/{export_name}/{folder_date}/{export_name}-*.{extension}"
+    # Filename pattern: {export_name}-{date}-{shard}.{extension}
+    gcs_uri = f"gs://{gcs_bucket}/{export_name}/{folder_date}/{export_name}-{folder_date}-*.{extension}"
 
     return f"""EXPORT DATA OPTIONS(
     uri='{gcs_uri}',

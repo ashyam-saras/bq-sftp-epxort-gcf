@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from google.cloud import storage
 
 from src.helpers import cprint
-from src.sftp import check_sftp_credentials, upload_from_gcs, upload_from_gcs_parallel
+from src.sftp import check_sftp_credentials, upload_from_gcs, upload_from_gcs_sequential
 
 
 def _parse_gcs_url(url: str) -> Tuple[str, str]:
@@ -46,7 +46,7 @@ def _build_sftp_filename(original_filename: str, export_name: str, date: Optiona
     Build SFTP filename in format: {export_name}_{date}-{part}.{ext}
     
     Args:
-        original_filename: Original GCS filename (e.g., "Product-000000000000.csv.gz")
+        original_filename: Original GCS filename (e.g., "Product-20250108-000000000000.csv.gz")
         export_name: Name of the export (e.g., "Product")
         date: Date string in YYYYMMDD format
     
@@ -57,7 +57,15 @@ def _build_sftp_filename(original_filename: str, export_name: str, date: Optiona
         # No date found, return original filename
         return original_filename
     
-    # Pattern: {name}-{part}.{ext} or {name}-{part}.csv.gz
+    # New pattern: {name}-{date}-{part}.{ext}
+    # Example: Product-20250108-000000000000.csv.gz -> Product_20250108-000000000000.csv.gz
+    match = re.match(r'^(.+?)-(\d{8})-(\d+)(\..*)?$', original_filename)
+    if match:
+        part_number = match.group(3)
+        extension = match.group(4) or ""
+        return f"{export_name}_{date}-{part_number}{extension}"
+    
+    # Legacy pattern: {name}-{part}.{ext} (without date)
     # Example: Product-000000000000.csv.gz -> Product_20250108-000000000000.csv.gz
     match = re.match(r'^(.+?)-(\d+)(\..*)?$', original_filename)
     if match:
@@ -120,7 +128,6 @@ def transfer_gcs_to_sftp(
     sftp_config: Dict[str, Any],
     gcs_path: str,
     export_name: str,
-    max_workers: int = 3,  # Keep low to avoid SFTP connection limits
 ) -> Dict[str, Any]:
     """
     Transfer files from GCS to SFTP.
@@ -191,7 +198,8 @@ def transfer_gcs_to_sftp(
         files_transferred = 1
         destination = f"{sftp_config['directory']}/{remote_filename}"
     else:
-        files_transferred = upload_from_gcs_parallel(sftp_config, file_mappings, max_workers=max_workers)
+        # Use sequential upload with single connection for reliability
+        files_transferred = upload_from_gcs_sequential(sftp_config, file_mappings)
         destination = f"{sftp_config['directory']}/"
 
     total_time = time.time() - overall_start

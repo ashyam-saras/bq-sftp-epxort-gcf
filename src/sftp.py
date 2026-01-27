@@ -123,14 +123,116 @@ def upload_from_gcs(sftp_config: Dict[str, Any], gcs_uri: str, remote_filename: 
         raise ConfigError(error_message)
 
 
+def upload_from_gcs_sequential(
+    sftp_config: Dict[str, Any],
+    file_mappings: List[Tuple[str, str]],
+) -> int:
+    """
+    Upload multiple files from GCS to SFTP using a single persistent connection.
+    More reliable than parallel uploads - avoids connection limit issues.
+
+    Args:
+        sftp_config: SFTP connection configuration
+        file_mappings: List of (gcs_uri, remote_filename) tuples
+
+    Returns:
+        int: Number of files successfully transferred
+
+    Raises:
+        Exception: If any file fails to transfer
+    """
+    if not file_mappings:
+        cprint("No files to transfer", severity="WARNING")
+        return 0
+
+    host = sftp_config["host"]
+    port = int(sftp_config.get("port", 22))
+    username = sftp_config["username"]
+    password = sftp_config["password"]
+    directory = sftp_config["directory"]
+
+    total_files = len(file_mappings)
+    start_time = time.time()
+
+    cprint(f"Starting sequential upload of {total_files} files (single connection)", severity="INFO")
+
+    # Create single SFTP connection
+    transport, sftp = create_sftp_connection(host, port, username, password)
+
+    # Ensure target directory exists
+    remote_path = PurePosixPath(directory)
+    ensure_sftp_directory(sftp, remote_path)
+
+    # Initialize GCS client once
+    storage_client = storage.Client()
+    transferred = 0
+
+    try:
+        for idx, (gcs_uri, remote_filename) in enumerate(file_mappings):
+            file_start = time.time()
+            remote_file_path = remote_path / remote_filename
+
+            try:
+                # Get blob from GCS
+                bucket_name, blob_name = parse_gcs_uri(gcs_uri)
+                bucket = storage_client.bucket(bucket_name)
+                blob = bucket.get_blob(blob_name)
+
+                if not blob:
+                    raise FileNotFoundError(f"File not found in GCS: {gcs_uri}")
+
+                # Upload using existing connection
+                _download_and_upload(sftp, blob, str(remote_file_path))
+
+                file_time = time.time() - file_start
+                cprint(
+                    f"File {idx+1}/{total_files}: {remote_filename} transferred successfully",
+                    severity="INFO",
+                    time_taken=f"{file_time:.2f}s",
+                )
+                transferred += 1
+
+            except Exception as e:
+                file_time = time.time() - file_start
+                cprint(
+                    f"File {idx+1}/{total_files}: {remote_filename} transfer failed: {str(e)}",
+                    severity="ERROR",
+                    time_taken=f"{file_time:.2f}s",
+                )
+                # Close connection and raise - don't continue with partial transfers
+                sftp.close()
+                transport.close()
+                raise Exception(f"Transfer failed on file {idx+1}/{total_files} ({remote_filename}): {str(e)}")
+
+        total_time = time.time() - start_time
+        cprint(
+            f"Sequential upload complete: {transferred}/{total_files} files transferred",
+            severity="INFO",
+            total_time=f"{total_time:.2f}s",
+        )
+
+        return transferred
+
+    finally:
+        # Ensure connection is closed
+        try:
+            sftp.close()
+            transport.close()
+        except Exception:
+            pass
+
+
 def upload_from_gcs_parallel(
     sftp_config: Dict[str, Any],
     file_mappings: List[Tuple[str, str]],
     max_workers: int = None,
-) -> List[str]:
+) -> int:
     """
-    Upload multiple files from GCS to SFTP server in parallel using a simplified approach.
+    Upload multiple files from GCS to SFTP server in parallel.
     Each worker thread creates its own SFTP connection.
+    
+    WARNING: May cause connection limit issues on some SFTP servers.
+    Consider using upload_from_gcs_sequential() for more reliability.
 
     Args:
         sftp_config: SFTP connection configuration
@@ -138,11 +240,14 @@ def upload_from_gcs_parallel(
         max_workers: Maximum number of concurrent workers
 
     Returns:
-        List[str]: List of successfully transferred remote filenames
+        int: Number of files successfully transferred
+
+    Raises:
+        Exception: If any file fails to transfer
     """
     if not file_mappings:
         cprint("No files to transfer", severity="WARNING")
-        return []
+        return 0
 
     # Set default thread count if not specified
     if max_workers is None:
@@ -216,7 +321,11 @@ def upload_from_gcs_parallel(
             total_time=f"{total_time:.2f}s",
         )
 
-        return successful_files
+        # Fail if any files failed to transfer
+        if failed > 0:
+            raise Exception(f"Transfer failed: {failed}/{total_files} files failed to upload")
+
+        return len(successful_files)
 
     except Exception as e:
         cprint(f"Parallel upload operation failed: {str(e)}", severity="ERROR")

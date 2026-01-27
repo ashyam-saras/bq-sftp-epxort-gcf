@@ -76,7 +76,7 @@ def build_export_query(
     elif compression.upper() == "SNAPPY":
         extension += ".snappy"
 
-    gcs_uri = f"gs://{gcs_bucket}/{export_name}/{ds_nodash}/{export_name}-*.{extension}"
+    gcs_uri = f"gs://{gcs_bucket}/{export_name}/{ds_nodash}/{export_name}-{ds_nodash}-*.{extension}"
 
     # Build EXPORT DATA statement
     export_sql = f"""EXPORT DATA OPTIONS(
