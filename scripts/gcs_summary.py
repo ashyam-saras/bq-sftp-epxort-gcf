@@ -6,18 +6,24 @@ Usage:
     # GCS only
     python -m scripts.gcs_summary --bucket boxout-sftp-transfer
     
-    # SFTP only
-    python -m scripts.gcs_summary --sftp-host sftp.example.com --sftp-user user --sftp-pass pass --sftp-dir /uploads
+    # SFTP only (uses SFTP_PASSWORD from .env)
+    python -m scripts.gcs_summary --sftp-host sftp.example.com --sftp-user user --sftp-dir /uploads
     
     # Both GCS and SFTP
-    python -m scripts.gcs_summary --bucket boxout-sftp-transfer --sftp-host sftp.example.com --sftp-user user --sftp-pass pass --sftp-dir /uploads
+    python -m scripts.gcs_summary --bucket boxout-sftp-transfer --sftp-host sftp.example.com --sftp-user user --sftp-dir /uploads
 """
 
 import argparse
+import os
 import re
 from collections import defaultdict
 from datetime import datetime
+from pathlib import Path
 from typing import Dict, List, Any, Optional
+
+# Load .env file
+from dotenv import load_dotenv
+load_dotenv(Path(__file__).parent.parent / ".env")
 
 from google.cloud import storage
 
@@ -224,43 +230,46 @@ def _print_table(summaries: Dict[str, Any]) -> None:
 
 
 def main():
-    import os
-    
     parser = argparse.ArgumentParser(description="GCS/SFTP export summary")
     
     # GCS options
-    parser.add_argument("--bucket", "-b", help="GCS bucket name")
+    parser.add_argument("--bucket", "-b", default=os.environ.get("GCS_BUCKET"), help="GCS bucket name")
     
-    # SFTP options
-    parser.add_argument("--sftp-host", help="SFTP host")
-    parser.add_argument("--sftp-port", type=int, default=22, help="SFTP port (default: 22)")
-    parser.add_argument("--sftp-user", help="SFTP username")
-    parser.add_argument("--sftp-pass", help="SFTP password (or set SFTP_PASSWORD env var)")
-    parser.add_argument("--sftp-dir", help="SFTP directory")
+    # SFTP options (defaults from .env)
+    parser.add_argument("--sftp-host", default=os.environ.get("SFTP_HOST"), help="SFTP host")
+    parser.add_argument("--sftp-port", type=int, default=int(os.environ.get("SFTP_PORT", 22)), help="SFTP port")
+    parser.add_argument("--sftp-user", default=os.environ.get("SFTP_USERNAME"), help="SFTP username")
+    parser.add_argument("--sftp-pass", default=os.environ.get("SFTP_PASSWORD"), help="SFTP password")
+    parser.add_argument("--sftp-dir", default=os.environ.get("SFTP_DIRECTORY"), help="SFTP directory")
     
     # Common options
     parser.add_argument("--export", "-e", help="Filter to specific export name")
     parser.add_argument("--json", action="store_true", help="Output as JSON")
+    parser.add_argument("--gcs", action="store_true", help="Show GCS summary")
+    parser.add_argument("--sftp", action="store_true", help="Show SFTP summary")
     
     args = parser.parse_args()
     
-    if not args.bucket and not args.sftp_host:
-        parser.error("At least one of --bucket or --sftp-host is required")
+    # If neither --gcs nor --sftp specified, show both if configured
+    show_gcs = args.gcs or (not args.gcs and not args.sftp and args.bucket)
+    show_sftp = args.sftp or (not args.gcs and not args.sftp and args.sftp_host)
+    
+    if not show_gcs and not show_sftp:
+        parser.error("No storage configured. Set GCS_BUCKET or SFTP_HOST in .env, or use --bucket/--sftp-host")
     
     gcs_summaries = None
     sftp_summaries = None
     
-    if args.bucket:
+    if show_gcs and args.bucket:
         gcs_summaries = get_gcs_summary(args.bucket, args.export)
     
-    if args.sftp_host:
-        sftp_pass = args.sftp_pass or os.environ.get("SFTP_PASSWORD")
-        if not all([args.sftp_user, sftp_pass, args.sftp_dir]):
-            parser.error("--sftp-user, --sftp-dir, and password (--sftp-pass or SFTP_PASSWORD env) are required")
+    if show_sftp and args.sftp_host:
+        if not all([args.sftp_user, args.sftp_pass, args.sftp_dir]):
+            parser.error("SFTP requires host, user, password, and directory (check .env)")
         sftp_summaries = get_sftp_summary(
             args.sftp_host,
             args.sftp_user,
-            sftp_pass,
+            args.sftp_pass,
             args.sftp_dir,
             args.sftp_port,
             args.export,
