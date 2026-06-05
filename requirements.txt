@@ -1,17 +1,20 @@
+# Pinned to the versions verified running in Cloud Run revision 00016 (2026-06-05).
+# Bump deliberately, not implicitly. See memory: paramiko-pin-incident.
+
 # Core
-flask>=2.0.0
-gunicorn>=21.0.0
+flask==3.1.3
+gunicorn==26.0.0
 
 # Google Cloud
-google-cloud-storage>=2.0.0
+google-cloud-storage==3.11.0
 
 # SFTP
 # Pinned: paramiko 5.0.0 dropped legacy host-key algorithms (ssh-rsa/ssh-dss)
 # that sftp.boxouthealth.com still requires. 4.0.0 negotiates fine. Do not bump
-# without testing against the SFTP server. See incident 2026-06-05.
+# without testing against the SFTP server (python -m src.sftp check). Incident 2026-06-05.
 paramiko==4.0.0
-tenacity>=8.0.0
+tenacity==9.1.4
 
 # Utilities
-python-dotenv>=1.0.0
-requests>=2.31.0
+python-dotenv==1.2.2
+requests==2.34.2

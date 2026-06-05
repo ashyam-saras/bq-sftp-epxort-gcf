@@ -4,9 +4,13 @@ on:
   push:
     branches: [main]
     paths:
+      # NOTE: 'configs/**' intentionally excluded — config changes flow to the
+      # Airflow variable via sync-airflow-variable.yml and don't need an image
+      # rebuild. Rebuilding on config edits re-pulled deps and caused the
+      # paramiko 5.0.0 breakage (incident 2026-06-05). Use workflow_dispatch to
+      # rebuild manually if the baked config ever needs refreshing.
       - 'src/**'
       - 'server.py'
-      - 'configs/**'
       - 'requirements.txt'
       - 'Dockerfile'
       - '.github/workflows/deploy-cloud-run.yml'
