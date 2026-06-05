@@ -1,0 +1,21 @@
+requirements.txt
+  s_48755c822f8afb::t_4cc44cb66027b1 1-20
+.github/workflows/deploy-cloud-run.yml
+  s_48755c822f8afb::t_c670e48b91624f 7-11
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.3",
+  "base_commit_sha": "e6713d38afdd71a3d45fa50a9b2db80926c95234",
+  "prompts": {},
+  "sessions": {
+    "s_48755c822f8afb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d5ee238d-6917-4cb8-9ff9-29628dbe8685",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Ashyam Zubair <ashyam.zubair@sarasanalytics.com>"
+    }
+  }
+}
