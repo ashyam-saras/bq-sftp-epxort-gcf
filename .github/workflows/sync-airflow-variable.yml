@@ -1,0 +1,65 @@
+name: Sync Airflow Variable to Cloud Composer
+
+# Keeps the SFTP_EXPORT_CONFIG Airflow Variable in Cloud Composer in sync with
+# configs/exports.json. The file in this repo is the single source of truth.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'configs/exports.json'
+      - '.github/workflows/sync-airflow-variable.yml'
+  workflow_dispatch:
+
+env:
+  PROJECT_ID: insightsprod
+  COMPOSER_ENV: edm-pulse-composer-3
+  COMPOSER_LOCATION: us-central1
+  VARIABLE_NAME: SFTP_EXPORT_CONFIG
+  CONFIG_FILE: configs/exports.json
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Validate config JSON
+        run: |
+          jq empty "${{ env.CONFIG_FILE }}"
+          echo "✅ ${{ env.CONFIG_FILE }} is valid JSON"
+
+      - name: Google Auth
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+
+      - name: Update Airflow Variable
+        run: |
+          # Compact to single line; jq -c keeps spaces inside strings (queries) intact
+          CONFIG_JSON=$(jq -c . "${{ env.CONFIG_FILE }}")
+          echo "Setting ${{ env.VARIABLE_NAME }} on ${{ env.COMPOSER_ENV }} (${{ env.COMPOSER_LOCATION }})..."
+          gcloud composer environments run "${{ env.COMPOSER_ENV }}" \
+            --location "${{ env.COMPOSER_LOCATION }}" \
+            variables -- set "${{ env.VARIABLE_NAME }}" "$CONFIG_JSON"
+          echo "✅ Airflow Variable updated"
+
+      - name: Verify Airflow Variable matches config
+        run: |
+          gcloud composer environments run "${{ env.COMPOSER_ENV }}" \
+            --location "${{ env.COMPOSER_LOCATION }}" \
+            variables -- get "${{ env.VARIABLE_NAME }}" 2>/dev/null \
+            | sed -n '/^{/,$p' > /tmp/remote_var.json
+          if diff <(jq -S . "${{ env.CONFIG_FILE }}") <(jq -S . /tmp/remote_var.json); then
+            echo "✅ Airflow Variable is in sync with ${{ env.CONFIG_FILE }}"
+          else
+            echo "❌ Airflow Variable does not match ${{ env.CONFIG_FILE }}"
+            exit 1
+          fi
