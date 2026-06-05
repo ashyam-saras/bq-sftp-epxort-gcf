@@ -1,0 +1,21 @@
+configs/exports.json
+  s_48755c822f8afb::t_771172f2a48d6b 26-35
+.github/workflows/sync-airflow-variable.yml
+  s_48755c822f8afb::t_7e44338f28b4f2 1-65
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.3",
+  "base_commit_sha": "ad54dddf0fe3888c9abbae1991bb5742232852aa",
+  "prompts": {},
+  "sessions": {
+    "s_48755c822f8afb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d5ee238d-6917-4cb8-9ff9-29628dbe8685",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Ashyam Zubair <ashyam.zubair@sarasanalytics.com>"
+    }
+  }
+}
