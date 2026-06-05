@@ -1,0 +1,19 @@
+requirements.txt
+  s_48755c822f8afb::t_6b858a1b24b371 9-12
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.3",
+  "base_commit_sha": "ee7c89683526ae62fe4eb9a31382c5b22fe4b061",
+  "prompts": {},
+  "sessions": {
+    "s_48755c822f8afb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d5ee238d-6917-4cb8-9ff9-29628dbe8685",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Ashyam Zubair <ashyam.zubair@sarasanalytics.com>"
+    }
+  }
+}
