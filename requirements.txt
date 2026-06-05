@@ -6,7 +6,10 @@ gunicorn>=21.0.0
 google-cloud-storage>=2.0.0
 
 # SFTP
-paramiko>=3.0.0
+# Pinned: paramiko 5.0.0 dropped legacy host-key algorithms (ssh-rsa/ssh-dss)
+# that sftp.boxouthealth.com still requires. 4.0.0 negotiates fine. Do not bump
+# without testing against the SFTP server. See incident 2026-06-05.
+paramiko==4.0.0
 tenacity>=8.0.0
 
 # Utilities
