@@ -282,9 +282,19 @@ def sftp_export():
             print(f"Resolved query (with placeholders replaced):\n{resolved_query}")
             print(f"Full EXPORT DATA statement:\n{export_sql}")
 
-            # Execute using BigQuery hook
+            # Execute using BigQuery hook.
+            # run_query() was removed in newer apache-airflow-providers-google;
+            # insert_job() is the supported replacement and blocks until the job finishes.
             hook = BigQueryHook(gcp_conn_id="google_cloud_default", use_legacy_sql=False)
-            hook.run_query(sql=export_sql, use_legacy_sql=False)
+            hook.insert_job(
+                configuration={
+                    "query": {
+                        "query": export_sql,
+                        "useLegacySql": False,
+                    }
+                },
+                project_id=hook.project_id,
+            )
 
             gcs_path = f"gs://{gcs_bucket}/{export_name}/{folder_date}/"
             print(f"Export complete. Files at: {gcs_path}")

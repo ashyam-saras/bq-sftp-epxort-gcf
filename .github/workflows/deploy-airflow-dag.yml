@@ -10,8 +10,9 @@ on:
 
 env:
   PROJECT_ID: insightsprod
-  COMPOSER_BUCKET: us-central1-edm-pulse-compo-d334fad9-bucket
-  DAG_FOLDER: dags/boxout_sftp_export
+  # Org-level GitHub variable, e.g. gs://us-central1-edm-pulse-compo-d334fad9-bucket/dags
+  DAGS_PATH: ${{ vars.PULSE_AIRFLOW_DAGS_PATH }}
+  DAG_SUBFOLDER: boxout_sftp_export
 
 jobs:
   deploy:
@@ -33,14 +34,20 @@ jobs:
 
       - name: Sync DAG to Cloud Composer
         run: |
+          if [ -z "${DAGS_PATH}" ]; then
+            echo "::error::PULSE_AIRFLOW_DAGS_PATH organization variable is not set"
+            exit 1
+          fi
+          TARGET="${DAGS_PATH%/}/${DAG_SUBFOLDER}"
           echo "Syncing DAG files to Cloud Composer..."
           echo "Source: airflow/dags/"
-          echo "Target: gs://${{ env.COMPOSER_BUCKET }}/${{ env.DAG_FOLDER }}/"
+          echo "Target: ${TARGET}/"
           # rsync -d deletes files in destination not present in source
-          gsutil -m rsync -r -d airflow/dags/ gs://${{ env.COMPOSER_BUCKET }}/${{ env.DAG_FOLDER }}/
+          gsutil -m rsync -r -d airflow/dags/ "${TARGET}/"
           echo "✅ DAG files synced successfully"
 
       - name: List deployed files
         run: |
+          TARGET="${DAGS_PATH%/}/${DAG_SUBFOLDER}"
           echo "Files in Composer DAGs folder:"
-          gsutil ls -r gs://${{ env.COMPOSER_BUCKET }}/${{ env.DAG_FOLDER }}/
+          gsutil ls -r "${TARGET}/"
