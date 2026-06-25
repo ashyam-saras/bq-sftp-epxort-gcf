@@ -1,0 +1,22 @@
+airflow/dags/sftp_export_dag.py
+  s_c8969022dc4309::t_dc8b13d8f82e37 285-287,289-297
+.github/workflows/deploy-airflow-dag.yml
+  s_c8969022dc4309::t_a169b01e5c1bd9 37-41,44,46,51,53
+  s_c8969022dc4309::t_db27680b74d55d 13-15
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.13",
+  "base_commit_sha": "3f2ef8b2fbea682d80528abb65dd6e2ecea61112",
+  "prompts": {},
+  "sessions": {
+    "s_c8969022dc4309": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dda7b183-506f-4057-94a9-22c5ea993672",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Ashyam Zubair <ashyam.zubair@sarasanalytics.com>"
+    }
+  }
+}
