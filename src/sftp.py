@@ -5,6 +5,7 @@ Handles connecting to SFTP and uploading files.
 
 import concurrent.futures
 import os
+import socket
 import tempfile
 import time
 from pathlib import PurePosixPath
@@ -507,12 +508,22 @@ def check_sftp_credentials(sftp_config: Dict[str, Any], timeout: int = 10) -> bo
 @retry(
     stop=stop_after_attempt(5),
     wait=wait_exponential(multiplier=1, min=1, max=20),
-    retry=retry_if_exception_type((ConnectionError, paramiko.ssh_exception.SSHException)),
+    # socket.gaierror covers DNS failures. It subclasses OSError, NOT
+    # ConnectionError, so it used to slip past this retry entirely and fail the
+    # whole transfer in ~200ms. sftp.boxouthealth.com is served by only two
+    # Dotster nameservers that Google's resolvers intermittently cannot reach
+    # ("[Errno -3] Temporary failure in name resolution"), so retrying in-process
+    # is what actually recovers these.
+    retry=retry_if_exception_type((ConnectionError, paramiko.ssh_exception.SSHException, socket.gaierror)),
     before_sleep=lambda retry_state: cprint(
         f"Connection attempt {retry_state.attempt_number} failed, retrying in {retry_state.next_action.sleep:.1f} seconds...",
         severity="WARNING",
         error=str(retry_state.outcome.exception()),
     ),
+    # Surface the real exception once attempts are exhausted. Without this,
+    # tenacity raises RetryError[<Future ...>], which is what the caller logs —
+    # hiding the actual cause behind an opaque wrapper.
+    reraise=True,
 )
 def create_sftp_connection(host: str, port: int, username: str, password: str):
     """Create an SFTP connection with retry logic."""
