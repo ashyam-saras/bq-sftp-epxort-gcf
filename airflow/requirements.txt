@@ -4,4 +4,7 @@
 apache-airflow>=2.5.0
 apache-airflow-providers-google>=10.0.0
 apache-airflow-providers-http>=4.0.0
+# Preinstalled in Cloud Composer 3; listed for local parity. Used for failure
+# alerts via the shared `slack_default` connection.
+apache-airflow-providers-slack>=8.0.0
 requests>=2.31.0

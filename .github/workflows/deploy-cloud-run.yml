@@ -62,10 +62,21 @@ jobs:
           env_vars: |
             SFTP_HOST=${{ vars.SFTP_HOST }}
             SFTP_USERNAME=${{ vars.SFTP_USERNAME }}
-            SFTP_PASSWORD=${{ secrets.SFTP_PASSWORD }}
             SFTP_DIRECTORY=${{ vars.SFTP_DIRECTORY }}
             GCS_BUCKET=${{ vars.GCS_BUCKET }}
             CONFIG_PATH=configs/exports.json
+          # SFTP_PASSWORD comes from Secret Manager, not a plaintext env var —
+          # as an env var it was readable by anyone with run.services.get.
+          # Cloud Run mounts it under the same SFTP_PASSWORD name, so no code
+          # change is needed. Rotate by adding a new secret version; :latest is
+          # resolved at instance start.
+          secrets: |
+            SFTP_PASSWORD=boxout-sftp-password:latest
+          # Both default to 'merge'. Without 'overwrite' the old plaintext
+          # SFTP_PASSWORD env var would survive this change and collide with the
+          # secret of the same name, which Cloud Run rejects outright.
+          env_vars_update_strategy: overwrite
+          secrets_update_strategy: overwrite
           timeout: 2400s
           flags: >-
             --allow-unauthenticated

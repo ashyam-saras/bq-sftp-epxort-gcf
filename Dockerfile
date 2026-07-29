@@ -17,6 +17,11 @@ COPY server.py ./
 # Set environment variables
 ENV PYTHONPATH=/app
 ENV PORT=8080
+# Without this, print() to stdout is block-buffered (stdout is not a TTY under
+# gunicorn), so cprint output never reaches Cloud Logging and failures look
+# silent — only gunicorn's own stderr lines show up. Cost us a day of debugging
+# a DNS outage that was logging correctly the whole time. Do not remove.
+ENV PYTHONUNBUFFERED=1
 
 # Expose port
 EXPOSE 8080

@@ -29,6 +29,20 @@ Backfilling:
 - CLI: airflow dags backfill sftp_export -s 2025-01-01 -e 2025-01-07
 - UI: Trigger DAG with specific execution date
 - Failed tasks: Clear task in UI to re-run
+
+Retries:
+- All tasks retry once after 5 minutes.
+- transfer_to_sftp retries 5 times with exponential backoff (~2, 4, 8, 16, 32
+  minutes, jittered) because the GCS -> SFTP hop is the flakiest step.
+
+Alerting:
+- Task failures post to Slack via the shared `slack_default` bot connection.
+- Channel comes from the `boxout_sftp_slack_channel` Variable
+  (default: #prod-pulse-job-alerts). Change it without redeploying:
+      airflow variables set boxout_sftp_slack_channel '#some-other-channel'
+- Alerts fire only after retries are exhausted, so one message == one dead task.
+  Every export group alerts independently, so a systemic outage produces one
+  message per export.
 """
 
 import json
@@ -69,50 +83,116 @@ def get_config() -> dict[str, Any]:
 # =============================================================================
 
 
+# Uses the shared `slack_default` bot-token connection, same as bq_quota_monitor
+# and data-latency-alerts. Channel is a Variable so it can be repointed without
+# redeploying the DAG.
+SLACK_CONN_ID = "slack_default"
+SLACK_CHANNEL_VAR = "boxout_sftp_slack_channel"
+DEFAULT_SLACK_CHANNEL = "#prod-pulse-job-alerts"
+
+
+def _describe_exception(exception: Any) -> str:
+    """Render the task exception as a short, readable line for Slack."""
+    if exception is None:
+        return "Unknown error (no exception in callback context)"
+
+    text = str(exception).strip() or exception.__class__.__name__
+    if len(text) > 800:
+        text = text[:800] + " …(truncated)"
+    return f"{type(exception).__name__}: {text}"
+
+
+def _format_duration(seconds: float | None) -> str:
+    """Render a task duration as e.g. '5m 17s'."""
+    if not seconds:
+        return "unknown"
+    minutes, secs = divmod(int(seconds), 60)
+    return f"{minutes}m {secs}s" if minutes else f"{secs}s"
+
+
 def send_slack_alert(context: dict[str, Any]) -> None:
-    """Send Slack notification on task failure."""
+    """
+    Post a task-failure alert to Slack.
+
+    Airflow fires on_failure_callback only once retries are exhausted, so every
+    message here represents a genuinely dead task, not a transient blip.
+    """
     try:
-        webhook_url = Variable.get("slack_webhook_url", default_var=None)
-        if not webhook_url:
-            print("No slack_webhook_url configured, skipping notification")
-            return
+        from airflow.providers.slack.hooks.slack import SlackHook
 
-        ti = context.get("task_instance")
-        dag_id = context.get("dag").dag_id
-        task_id = ti.task_id if ti else "unknown"
-        data_interval = context.get("data_interval_start", datetime.now())
-        exception = context.get("exception", "Unknown error")
-        log_url = ti.log_url if ti else ""
+        ti = context["task_instance"]
+        channel = Variable.get(SLACK_CHANNEL_VAR, default_var=DEFAULT_SLACK_CHANNEL)
 
-        message = {
-            "text": "🚨 *SFTP Export Failed*",
-            "blocks": [
-                {"type": "header", "text": {"type": "plain_text", "text": "🚨 SFTP Export Failed"}},
+        # Inside a task group the task_id is "<export_name>.<step>",
+        # e.g. "account_overview_sales.transfer_to_sftp".
+        export_name, _, step = ti.task_id.rpartition(".")
+        export_name = export_name or "(ungrouped)"
+        step = step or ti.task_id
+
+        dag_id = context["dag"].dag_id
+        dag_run = context.get("dag_run")
+        run_id = dag_run.run_id if dag_run else "unknown"
+        interval_end = context.get("data_interval_end")
+        folder_date = interval_end.strftime("%Y%m%d") if interval_end else "unknown"
+        attempts = (ti.max_tries or 0) + 1
+        error_text = _describe_exception(context.get("exception"))
+
+        blocks: list[dict[str, Any]] = [
+            {
+                "type": "header",
+                "text": {"type": "plain_text", "text": f"🚨 SFTP export failed: {export_name}", "emoji": True},
+            },
+            {
+                "type": "section",
+                "fields": [
+                    {"type": "mrkdwn", "text": f"*Export*\n`{export_name}`"},
+                    {"type": "mrkdwn", "text": f"*Step*\n`{step}`"},
+                    {"type": "mrkdwn", "text": f"*Data date*\n{folder_date}"},
+                    {"type": "mrkdwn", "text": f"*Duration*\n{_format_duration(ti.duration)}"},
+                    {"type": "mrkdwn", "text": f"*Attempts*\n{attempts} (all failed)"},
+                    {"type": "mrkdwn", "text": f"*DAG*\n`{dag_id}`"},
+                ],
+            },
+            {"type": "section", "text": {"type": "mrkdwn", "text": f"*Error*\n```{error_text}```"}},
+            {
+                "type": "context",
+                "elements": [{"type": "mrkdwn", "text": f"Run `{run_id}` • data interval ending {interval_end}"}],
+            },
+        ]
+
+        log_url = getattr(ti, "log_url", "")
+        if log_url:
+            blocks.append(
                 {
-                    "type": "section",
-                    "fields": [
-                        {"type": "mrkdwn", "text": f"*DAG:*\n{dag_id}"},
-                        {"type": "mrkdwn", "text": f"*Task:*\n{task_id}"},
-                        {"type": "mrkdwn", "text": f"*Data Interval:*\n{data_interval}"},
-                        {"type": "mrkdwn", "text": f"*Error:*\n```{str(exception)[:200]}```"},
+                    "type": "actions",
+                    "elements": [
+                        {
+                            "type": "button",
+                            "text": {"type": "plain_text", "text": "View logs", "emoji": True},
+                            "url": log_url,
+                            "style": "danger",
+                        }
                     ],
-                },
-                (
-                    {
-                        "type": "actions",
-                        "elements": [
-                            {"type": "button", "text": {"type": "plain_text", "text": "View Logs"}, "url": log_url}
-                        ],
-                    }
-                    if log_url
-                    else {"type": "divider"}
-                ),
-            ],
-        }
+                }
+            )
 
-        requests.post(webhook_url, json=message, timeout=10)
-        print("Slack notification sent")
+        hook = SlackHook(slack_conn_id=SLACK_CONN_ID)
+        response = hook.call(
+            api_method="chat.postMessage",
+            json={
+                "channel": channel,
+                "blocks": blocks,
+                # Fallback text drives the mobile/desktop notification preview.
+                "text": f"🚨 SFTP export failed: {export_name}.{step} ({folder_date}) after {attempts} attempts",
+            },
+        )
+
+        if response.get("ok"):
+            print(f"Slack alert sent to {channel}")
+        else:
+            print(f"Slack rejected the alert for {channel}: {response.get('error')}")
     except Exception as e:
+        # Never let alerting failure mask the underlying task failure.
         print(f"Failed to send Slack notification: {e}")
 
 
@@ -207,7 +287,10 @@ _exports = _config.get("exports", {})
     catchup=False,
     default_args={
         "owner": "data-engineering",
-        "retries": 0,
+        # Baseline safety net. transfer_to_sftp overrides this with exponential
+        # backoff — it is the step that actually flakes.
+        "retries": 1,
+        "retry_delay": timedelta(minutes=5),
         "on_failure_callback": send_slack_alert,
     },
     tags=["sftp", "export", "bigquery"],
@@ -306,7 +389,18 @@ def sftp_export():
                 "folder_date": folder_date,
             }
 
-        @task(execution_timeout=timedelta(minutes=45))
+        @task(
+            execution_timeout=timedelta(minutes=45),
+            # SFTP is the flakiest hop, so back off hard rather than hammering it.
+            # Airflow jitters each delay into [base*2^n, 2*base*2^n), giving roughly
+            # 2-4, 4-8, 8-16, 16-32, then 32 minutes. The jitter is deliberate: all
+            # export groups fail together, and lockstep retries would stampede the
+            # same SFTP server.
+            retries=5,
+            retry_delay=timedelta(minutes=2),
+            retry_exponential_backoff=True,
+            max_retry_delay=timedelta(minutes=32),
+        )
         def transfer_to_sftp(export_result: dict | None, cloud_run_url: str) -> dict | None:
             """Trigger Cloud Run to transfer files from GCS to SFTP."""
             if export_result is None:
